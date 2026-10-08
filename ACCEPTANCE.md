@@ -1,6 +1,6 @@
 # Discord Event Poster v0.1.0 最終受入記録
 
-検証日: 2026-10-09（日本時間）。
+検証日時: 2026-10-09 00:31〜00:35（日本時間、ブラウザ異常系と公開確認）。最終文書コミットの公開確認は完了後にoutputs側の本レポート末尾へ追記する。
 開始時のLocal HEAD / origin/main: `453df810f211873ca600660e7bb040d2c0c6d435`。作業ツリーcleanを確認。
 このファイルは outputs/v0.1.0-acceptance.md のリポジトリ側記録。
 
@@ -20,6 +20,8 @@ Webhookは架空の識別子とFAKE_BROWSER_TEST_ONLYのみ。秘密情報は未
 - `npm run test:browser`: 実ブラウザ14件 PASS / FAIL 0。
 - `node --check app.js`、`git diff --check`: PASS。
 - 実ブラウザ試験は単体テストの結果を代用していない。投稿中の確認ボタン有効化をブラウザでFAILとして再現し、修正後にPASSへ変わることを確認した。
+- 公開URLの実ブラウザ確認: 1280px・390px・320pxの3件 PASS / FAIL 0。
+- 合計42件 PASS / FAIL 0（既存25 + モックブラウザ14 + 公開ブラウザ3）。旧解析スモーク、静的チェック、配信ファイル検証は別途PASS。
 
 | ケース・項目 | 判定 | 証拠 |
 | --- | --- | --- |
@@ -53,15 +55,20 @@ Webhookは架空の識別子とFAKE_BROWSER_TEST_ONLYのみ。秘密情報は未
 ## GitHub Pages
 
 基準コミット453df810のPages run 37799109740はSUCCESSを確認。
-今回の修正コミットの最終デプロイ・公開HTML/CSS/JavaScript一致確認はPush後に実施する。
+今回の修正コミット19920384ddabf289b803f52fe45c96d16dab5926のPages run 37801617278はSUCCESSを確認。
 `node tests/pages-verify.cjs` でHTTP 200、改行を正規化したSHA-256一致、テスト・依存ファイルの404、公開PC/390px/320px画面とJavaScript読込エラー0を確認する。
 デプロイSUCCESSと公開ファイルの一致は別々に判定する。
 
+- 公開URL・HTML/CSS/JavaScript: HTTP 200、ローカルとの正規化SHA-256一致 PASS。
+- 開発コード・依存・生成結果の7パス: すべてHTTP 404、公開対象外 PASS。
+- 公開1280px/390px/320px: 解析・プレビュー動作、横スクロールなし、JavaScript読込とConsoleエラー0 PASS。
+- 19920384のLocal HEAD / origin/main一致、Push成功、作業ツリーcleanを確認済み。最終文書コミットの反映も完了条件として別途確認する。
+
 ## 最終判定
 
-現時点: PENDING（修正・試験済み、最終Pushと公開確認待ち）。
-HTTP異常時ブラウザUI14ケース、既存自動25ケース、Android / 実投稿ユーザー確認はPASS。
-残る公開検証が完了したらCOMPLETEへ更新する。
+判定: **v0.1.0 COMPLETE**。HTTP異常時の実ブラウザUI、既存自動試験、ユーザー確認2項目、修正アプリの公開確認はすべてPASS。今回の検証範囲で重大な未解決不具合なし。
+必須項目のFAIL / NOT TESTEDは0件。Androidと実Webhookはユーザー確認済みとして扱い、ツールによる再試験とは区別する。実Discordへの追加送信は0件。
+この判定は、最終文書コミットについてもPush・Pages SUCCESS・公開内容一致を確認できた場合に確定する。
 
 ## 残存リスク・v0.2.0改善候補
 
