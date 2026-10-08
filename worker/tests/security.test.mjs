@@ -41,8 +41,24 @@ test('fixed forum tags detect duplicates/missing; webhook membership; upstream s
  const logs=[],realError=console.error;console.error=(...args)=>logs.push(args.join(' '));
  try {
   globalThis.fetch=async()=>{throw new Error(h.env.DISCORD_BOT_TOKEN);};const error=await h.call('/api/forum/tags','GET',null,s.token);assert.equal(error.status,503);assert.ok(!(await error.text()).includes(h.env.DISCORD_BOT_TOKEN));
-  assert.deepEqual(JSON.parse(logs.at(-1)),{event:'request_failed',stage:'discord_forum_tags',errorName:'Error'});
+  assert.deepEqual(JSON.parse(logs.at(-1)),{event:'request_failed',stage:'discord_fetch',errorName:'Error'});
   assert.ok(logs.every(line=>!line.includes(h.env.DISCORD_BOT_TOKEN)));
  } finally { console.error=realError; }
  }finally{globalThis.fetch=real;}
+});
+test('Discord failure stages preserve safe status diagnostics',async()=>{
+ const statuses=[401,403,404,429,500,502,503];
+ for(const status of statuses){
+  const h=await setup(),s=await h.login(),logs=[],realFetch=globalThis.fetch,realError=console.error;console.error=(...args)=>logs.push(args.join(' '));
+  try { globalThis.fetch=async()=>new Response('SECRET_RESPONSE_BODY',{status});const r=await h.call('/api/forum/tags','GET',null,s.token);assert.equal(r.status,502);assert.ok(!(await r.text()).includes('SECRET_RESPONSE_BODY'));assert.deepEqual(JSON.parse(logs.at(-1)),{event:'request_failed',stage:'discord_response',errorName:'Error',status}); }
+  finally { globalThis.fetch=realFetch;console.error=realError; }
+ }
+});
+test('Discord JSON and forum-shape failures are classified without body leakage',async()=>{
+ const h=await setup(),s=await h.login(),realFetch=globalThis.fetch,realError=console.error,logs=[];console.error=(...args)=>logs.push(args.join(' '));
+ try {
+  globalThis.fetch=async()=>new Response('NOT_JSON_SECRET',{status:200});let r=await h.call('/api/forum/tags','GET',null,s.token);assert.equal(r.status,503);assert.ok(!(await r.text()).includes('NOT_JSON_SECRET'));assert.deepEqual(JSON.parse(logs.at(-1)),{event:'request_failed',stage:'discord_json_parse',errorName:'SyntaxError'});
+  globalThis.fetch=async()=>Response.json({id:'123',type:13,available_tags:[]});r=await h.call('/api/forum/tags','GET',null,s.token);assert.equal(r.status,502);assert.deepEqual(JSON.parse(logs.at(-1)),{event:'request_failed',stage:'discord_response',errorName:'InvalidForumResponse'});
+  assert.ok(logs.every(line=>!line.includes('NOT_JSON_SECRET')));
+ } finally { globalThis.fetch=realFetch;console.error=realError; }
 });

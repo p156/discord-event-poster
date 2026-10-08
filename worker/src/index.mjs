@@ -57,14 +57,16 @@ async function smallJson(request) {
 function configured(env) {
   return env.AUTH_STATE&&/^pbkdf2-sha256\$600000\$[a-f0-9]{32}\$[a-f0-9]{64}$/.test(env.APP_PASSWORD_HASH||'')&&typeof env.SESSION_SIGNING_KEY==='string'&&env.SESSION_SIGNING_KEY.length>=64&&/^\d{1,20}$/.test(env.DISCORD_FORUM_CHANNEL_ID||'')&&env.DISCORD_BOT_TOKEN;
 }
-function diagnostic(stage,error) {
+function diagnostic(stage,error,status) {
   const name=typeof error?.name==='string'&&/^[A-Za-z][A-Za-z0-9_$.-]{0,63}$/.test(error.name)?error.name:'Error';
-  console.error(JSON.stringify({event:'request_failed',stage,errorName:name}));
+  const entry={event:'request_failed',stage,errorName:name};
+  if(Number.isInteger(status)&&status>=100&&status<=599)entry.status=status;
+  console.error(JSON.stringify(entry));
 }
 async function auth(env,payload) { const stub=env.AUTH_STATE.get(env.AUTH_STATE.idFromName('personal-auth-v1'));return stub.fetch(new Request('https://internal/auth',{method:'POST',body:JSON.stringify(payload)})); }
 async function discord(env,path) {
   const response=await fetch('https://discord.com/api/v10/'+path,{headers:{Authorization:'Bot '+env.DISCORD_BOT_TOKEN},redirect:'error',signal:AbortSignal.timeout(10000)});
-  if(!response.ok)return null;return response.json();
+  return response;
 }
 export default {
   async fetch(request,env) {
@@ -90,22 +92,36 @@ export default {
         stage='auth_check';
         response=await auth(env,{action:path==='/api/logout'?'logout':'check',token});
         if(response.ok&&path==='/api/forum/tags') {
-          stage='discord_forum_tags';
-          const channel=await discord(env,'channels/'+env.DISCORD_FORUM_CHANNEL_ID);
-          if(!channel||channel.id!==env.DISCORD_FORUM_CHANNEL_ID||channel.type!==15||!Array.isArray(channel.available_tags))response=json({error:'Discordフォーラムを取得できませんでした。'},502);
+          stage='discord_fetch';
+          const discordResponse=await discord(env,'channels/'+env.DISCORD_FORUM_CHANNEL_ID);
+          stage='discord_response';
+          if(!discordResponse.ok){diagnostic(stage,null,discordResponse.status);response=json({error:'Discordフォーラムを取得できませんでした。'},502);}
           else {
-            const tags=channel.available_tags.map(t=>({id:t.id,name:t.name}));const mapping={},missing=[],duplicates=[];
-            for(const name of TAGS){const matches=tags.filter(t=>t.name===name);if(matches.length===0)missing.push(name);else if(matches.length>1)duplicates.push(name);else if(/^\d{1,20}$/.test(matches[0].id))mapping[name]=matches[0].id;else missing.push(name);}
-            response=json({forumId:channel.id,tags,mapping,missing,duplicates,unknown:tags.filter(t=>!TAGS.includes(t.name)).map(t=>t.name)});
+            stage='discord_json_parse';
+            const channel=await discordResponse.json();
+            stage='discord_response';
+            if(!channel||channel.id!==env.DISCORD_FORUM_CHANNEL_ID||channel.type!==15||!Array.isArray(channel.available_tags)){diagnostic(stage,{name:'InvalidForumResponse'});response=json({error:'Discordフォーラムを取得できませんでした。'},502);}
+            else {
+              stage='discord_tag_mapping';
+              const tags=channel.available_tags.map(t=>({id:t.id,name:t.name}));const mapping={},missing=[],duplicates=[];
+              for(const name of TAGS){const matches=tags.filter(t=>t.name===name);if(matches.length===0)missing.push(name);else if(matches.length>1)duplicates.push(name);else if(/^\d{1,20}$/.test(matches[0].id))mapping[name]=matches[0].id;else missing.push(name);}
+              response=json({forumId:channel.id,tags,mapping,missing,duplicates,unknown:tags.filter(t=>!TAGS.includes(t.name)).map(t=>t.name)});
+            }
           }
         } else if(response.ok&&path==='/api/forum/webhook-check') {
-          stage='discord_webhook_check';
           const body=await smallJson(request);
           if(typeof body.webhookId!=='string'||!/^\d{1,20}$/.test(body.webhookId))response=json({error:'Webhook IDを確認してください。'},400);
           else {
             // Only list webhooks belonging to the fixed forum; never proxy arbitrary API routes.
-            const hooks=await discord(env,'channels/'+env.DISCORD_FORUM_CHANNEL_ID+'/webhooks');
-            response=!Array.isArray(hooks)?json({error:'Webhookの所属確認に失敗しました。'},502):hooks.some(h=>h.id===body.webhookId&&h.type===1&&h.channel_id===env.DISCORD_FORUM_CHANNEL_ID)?json({forumId:env.DISCORD_FORUM_CHANNEL_ID,webhookId:body.webhookId}):json({error:'対象フォーラムのWebhookではありません。'},409);
+            stage='discord_fetch';
+            const discordResponse=await discord(env,'channels/'+env.DISCORD_FORUM_CHANNEL_ID+'/webhooks');
+            stage='discord_response';
+            if(!discordResponse.ok){diagnostic(stage,null,discordResponse.status);response=json({error:'Webhookの所属確認に失敗しました。'},502);}
+            else {
+              stage='discord_json_parse';
+              const hooks=await discordResponse.json();
+              response=!Array.isArray(hooks)?json({error:'Webhookの所属確認に失敗しました。'},502):hooks.some(h=>h.id===body.webhookId&&h.type===1&&h.channel_id===env.DISCORD_FORUM_CHANNEL_ID)?json({forumId:env.DISCORD_FORUM_CHANNEL_ID,webhookId:body.webhookId}):json({error:'対象フォーラムのWebhookではありません。'},409);
+            }
           }
         }
       } else response=json({error:'APIが見つかりません。'},404);
