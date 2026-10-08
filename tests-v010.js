@@ -15,4 +15,7 @@ assert(E.runAnalysis('改行なしの説明').events.length === 0, '解析不能
 assert(E.validateEvent({region:'東京',title:'x'.repeat(101),start:'',end:'',description:'',url:'',tags:''}).length, 'スレッド名制限');
 assert(E.parseWebhook('https://discord.com/api/webhooks/1/token'), 'Webhook URL');
 assert(!E.parseWebhook('https://example.com/api/webhooks/1/token'), '送信先検証');
+assert(E.MAX_EVENTS === 5, '最大5件');
+assert(E.autoTagEvent({title:'脱出',description:'ホラー',raw:'脱出 ホラー',warnings:[]}).includes('謎解き'), 'タグ自動判定');
+assert(E.appliedTagsFor({selectedTags:['謎解き']})[0].id === '', '未設定タグIDは空');
 console.log('PASS: parser, links, warnings, limits, webhook validation');
