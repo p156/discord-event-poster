@@ -1,0 +1,9 @@
+{
+  "name": "discord-event-poster-api",
+  "main": "src/index.mjs",
+  "compatibility_date": "2026-04-01",
+  "secrets": { "required": ["ALLOWED_ORIGIN", "DISCORD_BOT_TOKEN", "DISCORD_FORUM_CHANNEL_ID", "APP_PASSWORD_HASH", "SESSION_SIGNING_KEY"] },
+  "durable_objects": { "bindings": [{ "name": "AUTH_STATE", "class_name": "AuthState" }] },
+  "migrations": [{ "tag": "auth-v1", "new_sqlite_classes": ["AuthState"] }],
+  "observability": { "enabled": false }
+}

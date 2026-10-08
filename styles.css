@@ -4,3 +4,5 @@
 .tag-field legend { font-weight: 700; padding: 0 .25rem; }
 .tag-option { display:inline-flex; align-items:center; gap:.25rem; }
 .tag-field .hint { flex-basis:100%; margin:0; }
+.tag-field input { width:20px; min-height:20px; }
+.tag-field label { display:flex; align-items:center; gap:6px; }

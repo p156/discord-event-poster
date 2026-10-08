@@ -15,7 +15,11 @@ assert(E.runAnalysis('改行なしの説明').events.length === 0, '解析不能
 assert(E.validateEvent({region:'東京',title:'x'.repeat(101),start:'',end:'',description:'',url:'',tags:''}).length, 'スレッド名制限');
 assert(E.parseWebhook('https://discord.com/api/webhooks/1/token'), 'Webhook URL');
 assert(!E.parseWebhook('https://example.com/api/webhooks/1/token'), '送信先検証');
-assert(E.MAX_EVENTS === 5, '最大5件');
+assert(E.MAX_TAGS === 5, '最大5タグ');
 assert(E.autoTagEvent({title:'脱出',description:'ホラー',raw:'脱出 ホラー',warnings:[]}).includes('謎解き'), 'タグ自動判定');
 assert(E.appliedTagsFor({selectedTags:['謎解き']})[0].id === '', '未設定タグIDは空');
+assert(E.runAnalysis(Array.from({length:6},(_,i)=>`【東京】『イベント${i}』説明`).join('\n')).events.length===6, 'イベント件数を切り捨てない');
+assert(E.validateEvent({title:'題',selectedTags:Array(6).fill('ホラー')}).some(x=>x.includes('5件')), '5タグ上限');
+const edited={title:'普通の催し',description:'説明',raw:'ホラー',warnings:[]};
+assert(E.autoTagEvent(edited).length===0, '編集済みタイトル本文だけ判定');
 console.log('PASS: parser, links, warnings, limits, webhook validation');

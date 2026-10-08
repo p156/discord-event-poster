@@ -1,2 +1,6 @@
 node_modules/
 work/
+worker/work/
+.wrangler/
+.dev.vars*
+.env*

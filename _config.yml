@@ -1,5 +1,6 @@
 # Dev dependencies and test fixtures must not be part of the Pages site.
 exclude:
+  - worker
   - node_modules
   - work
   - tests
