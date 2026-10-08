@@ -17,6 +17,8 @@ v0.2.0 Phase 2は既存Workerによる個人用認証とフォーラムタグ取
 
 Workerの追加設定と本番デプロイ手順、API、料金比較、残作業は `worker/DEPLOYMENT.md` を参照してください。今回は本番Workerを変更していません。
 
+本番のWeb Crypto PBKDF2上限に対する修正・既存Secret互換性・再デプロイ手順は `worker/AUTH-PBKDF2-FIX.md` を参照してください。Workerは固定依存のPBKDF2実装をバンドルし、600,000回の既存ハッシュを維持します。ブラウザ側のランタイム依存は追加していません。
+
 外部ランタイム依存なしのVanilla JavaScriptです。GitHub Pagesではリポジトリの Settings → Pages で `main` / root を選択してください。Project Siteの相対URLで動作します。
 
 ## 検証

@@ -13,7 +13,7 @@ async function setup(){
 }
 test('signed sessions: tamper, expiration, logout replay and cross-instance revocation',async()=>{
  const h=await setup(),s=await h.login();assert.equal((await h.call('/api/session','GET',null,s.token)).status,200);
- assert.equal((await h.call('/api/session','GET',null,s.token.slice(0,-1)+'0')).status,401);
+ assert.equal((await h.call('/api/session','GET',null,s.token.slice(0,-1)+(s.token.endsWith('0')?'1':'0'))).status,401);
  assert.equal((await h.call('/api/logout','POST',null,s.token)).status,200);
  const second=new AuthState({storage:h.object.storage},h.env);h.env.AUTH_STATE.get=()=>({fetch:r=>second.fetch(r)});
  assert.equal((await h.call('/api/session','GET',null,s.token)).status,401);

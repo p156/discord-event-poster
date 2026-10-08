@@ -1,3 +1,6 @@
+import { pbkdf2Async } from '@noble/hashes/pbkdf2.js';
+import { sha256 } from '@noble/hashes/sha2.js';
+
 const TAGS = ['周遊型','ホール型','ルーム型','オンライン','持ち帰り','イマーシブ','謎解き','ホラー'];
 const enc = new TextEncoder();
 const hex = bytes => Array.from(new Uint8Array(bytes), x=>x.toString(16).padStart(2,'0')).join('');
@@ -5,8 +8,13 @@ const unhex = value => Uint8Array.from(value.match(/../g)||[], x=>parseInt(x,16)
 const json = (value,status=200) => Response.json(value,{status,headers:{'Cache-Control':'no-store'}});
 async function signingKey(secret) { return crypto.subtle.importKey('raw',enc.encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign','verify']); }
 export async function passwordHash(password,salt,iterations=600000) {
-  const key=await crypto.subtle.importKey('raw',enc.encode(password),'PBKDF2',false,['deriveBits']);
-  return hex(await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt:unhex(salt),iterations},key,256));
+  // Workers production Web Crypto rejects PBKDF2 above 100,000 iterations.
+  // Pure JS computes the SAME RFC 8018 hash, retaining existing 600k secrets.
+  if(typeof password!=='string'||password.length>256||!Number.isInteger(iterations)||iterations<1||iterations>600000||!/^[a-f0-9]{32}$/.test(salt))throw new Error('Invalid password hash parameters');
+  const bytes=enc.encode(password),saltBytes=unhex(salt);
+  let derived;
+  try { derived=await pbkdf2Async(sha256,bytes,saltBytes,{c:iterations,dkLen:32});return hex(derived); }
+  finally { bytes.fill(0);saltBytes.fill(0);derived?.fill(0); }
 }
 function equal(a,b) { let diff=a.length^b.length; for(let i=0;i<Math.max(a.length,b.length);i++)diff|=(a.charCodeAt(i)||0)^(b.charCodeAt(i)||0); return diff===0; }
 async function tokenFor(id,expires,key) { const message=id+'.'+expires; return message+'.'+hex(await crypto.subtle.sign('HMAC',await signingKey(key),enc.encode(message))); }

@@ -3,14 +3,18 @@
   "version": "0.2.0",
   "private": true,
   "scripts": {
-    "test": "node tests-v010.js && node --test tests-acceptance.cjs worker/tests/security.test.mjs",
+    "test": "node tests-v010.js && node --test tests-acceptance.cjs worker/tests/security.test.mjs worker/tests/pbkdf2-production.test.mjs",
     "test:browser": "node tests/browser-acceptance.cjs",
     "test:phase2-browser": "node tests/phase2-browser.cjs",
     "test:worker-runtime": "node worker/tests/runtime.mjs"
   },
   "devDependencies": {
+    "esbuild": "0.28.2",
     "miniflare": "5.20261006.1-alpha",
     "playwright": "1.64.0",
     "wrangler": "4.149.0"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.4.0"
   }
 }

@@ -1,5 +1,7 @@
 # Phase 2: 既存Workerへのデプロイ
 
+**本番PBKDF2上限修正:** 再デプロイ時は [AUTH-PBKDF2-FIX.md](AUTH-PBKDF2-FIX.md) を先に参照する。既存ハッシュ・署名鍵の再生成は不要。修正はWeb Cryptoの60万回計算を同一形式のJS実装へ置き換える。本番更新はユーザー確認後。
+
 対象は `discord-event-poster-api` のみ。現在のCloudflare設定は取得・変更していない。本番デプロイと実Discord照合は未実行。
 
 ## 設計
