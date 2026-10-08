@@ -70,20 +70,31 @@ async function discord(env,path) {
   const response=await fetch('https://discord.com/api/v10/'+path,{headers:{Authorization:'Bot '+env.DISCORD_BOT_TOKEN},redirect:'error',signal:AbortSignal.timeout(10000)});
   return response;
 }
-async function diagnosticFetch(url,headers) {
-  const controller=new AbortController();let timedOut=false;
-  const timer=setTimeout(()=>{timedOut=true;controller.abort();},10000);
+async function diagnosticFetch(url,headers,redirectMode='manual',timeoutMode='controller') {
+  const controller=timeoutMode==='controller'?new AbortController():null;let timedOut=false;
+  const timer=controller&&setTimeout(()=>{timedOut=true;controller.abort();},10000);
   try {
-    const response=await fetch(url,{headers,redirect:'manual',signal:controller.signal});
+    const signal=controller?.signal||AbortSignal.timeout(10000);
+    const response=await fetch(url,{headers,redirect:redirectMode,signal});
     return response.status>=300&&response.status<400?{kind:'redirect',status:response.status}:{kind:'http_response',status:response.status};
-  } catch { return {kind:timedOut?'timeout':'unknown_fetch_error'}; }
-  finally { clearTimeout(timer); }
+  } catch(error) {
+    const timeout=timedOut||timeoutMode==='abort_signal'&&(error?.name==='AbortError'||error?.name==='TimeoutError');
+    return {kind:timeout?'timeout':'unknown_fetch_error'};
+  }
+  finally { if(timer)clearTimeout(timer); }
 }
 async function runDiscordDiagnostic(env) {
-  const anonymous=await diagnosticFetch('https://discord.com/api/v10/gateway',{});
-  const bot=await diagnosticFetch('https://discord.com/api/v10/channels/'+env.DISCORD_FORUM_CHANNEL_ID,{Authorization:'Bot '+env.DISCORD_BOT_TOKEN});
-  const result={anonymous,bot};
-  console.log(JSON.stringify({event:'discord_connectivity_diagnostic',anonymous,bot}));
+  const gateway='https://discord.com/api/v10/gateway',channel='https://discord.com/api/v10/channels/'+env.DISCORD_FORUM_CHANNEL_ID;
+  const botHeaders={Authorization:'Bot '+env.DISCORD_BOT_TOKEN};
+  const anonymous=await diagnosticFetch(gateway,{},'error','abort_signal');
+  const bot=await diagnosticFetch(channel,botHeaders,'error','abort_signal');
+  const comparison={
+    bot_manual_abort_signal:await diagnosticFetch(channel,botHeaders,'manual','abort_signal'),
+    bot_error_controller:await diagnosticFetch(channel,botHeaders,'error','controller'),
+    bot_manual_controller:await diagnosticFetch(channel,botHeaders,'manual','controller')
+  };
+  const result={anonymous,bot,comparison};
+  console.log(JSON.stringify({event:'discord_connectivity_diagnostic',anonymous,bot,comparison}));
   return result;
 }
 export default {
