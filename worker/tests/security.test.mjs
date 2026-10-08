@@ -38,6 +38,11 @@ test('fixed forum tags detect duplicates/missing; webhook membership; upstream s
  assert.equal((await h.call('/api/forum/webhook-check','POST',{webhookId:'456'},s.token)).status,200);
  assert.equal((await h.call('/api/forum/webhook-check','POST',{webhookId:'999'},s.token)).status,409);
  assert.ok(calls.every(c=>c.url.startsWith('https://discord.com/api/v10/channels/123')));
- globalThis.fetch=async()=>{throw new Error(h.env.DISCORD_BOT_TOKEN);};const error=await h.call('/api/forum/tags','GET',null,s.token);assert.equal(error.status,503);assert.ok(!(await error.text()).includes(h.env.DISCORD_BOT_TOKEN));
+ const logs=[],realError=console.error;console.error=(...args)=>logs.push(args.join(' '));
+ try {
+  globalThis.fetch=async()=>{throw new Error(h.env.DISCORD_BOT_TOKEN);};const error=await h.call('/api/forum/tags','GET',null,s.token);assert.equal(error.status,503);assert.ok(!(await error.text()).includes(h.env.DISCORD_BOT_TOKEN));
+  assert.deepEqual(JSON.parse(logs.at(-1)),{event:'request_failed',stage:'discord_forum_tags',errorName:'Error'});
+  assert.ok(logs.every(line=>!line.includes(h.env.DISCORD_BOT_TOKEN)));
+ } finally { console.error=realError; }
  }finally{globalThis.fetch=real;}
 });
