@@ -1,0 +1,18 @@
+const fs = require('fs');
+const vm = require('vm');
+const source = fs.readFileSync('app.js', 'utf8');
+const elements = new Proxy({}, { get: (target, key) => key === 'addEventListener' ? () => {} : key === 'classList' ? {add(){},remove(){},toggle(){}} : key === 'offsetTop' ? 0 : key === 'value' ? '' : undefined });
+const context = { document:{getElementById:()=>elements}, window:{scrollTo(){}}, localStorage:{getItem:()=>null,setItem(){},removeItem(){}}, URL, fetch:async()=>({}), alert(){}, confirm:()=>true, console, setTimeout };
+vm.createContext(context); vm.runInContext(source, context);
+const E = context.window.EventPoster;
+function assert(ok, msg){ if(!ok) throw new Error(msg); }
+const sample = '【東京】『埋もれゆく部屋からの脱出』 10/9〜11/29 説明 [公式](https://example.com) #脱出\n【埼玉】『ウワサバナシ調査委員会 case2「言祝ぎの家-呪われた花嫁-」』 11/7〜8';
+const result = E.runAnalysis(sample);
+assert(result.events.length === 2, '複数イベント');
+assert(result.events[1].title.includes('言祝ぎの家'), 'タイトル内引用符');
+assert(result.events[0].url === 'https://example.com', 'Markdownリンク');
+assert(E.runAnalysis('改行なしの説明').events.length === 0, '解析不能警告');
+assert(E.validateEvent({region:'東京',title:'x'.repeat(101),start:'',end:'',description:'',url:'',tags:''}).length, 'スレッド名制限');
+assert(E.parseWebhook('https://discord.com/api/webhooks/1/token'), 'Webhook URL');
+assert(!E.parseWebhook('https://example.com/api/webhooks/1/token'), '送信先検証');
+console.log('PASS: parser, links, warnings, limits, webhook validation');
