@@ -1,0 +1,9 @@
+# Dev dependencies and test fixtures must not be part of the Pages site.
+exclude:
+  - node_modules
+  - work
+  - tests
+  - tests-acceptance.cjs
+  - tests-v010.js
+  - package.json
+  - package-lock.json
