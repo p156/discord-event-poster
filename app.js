@@ -8,7 +8,7 @@
 
   function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
   function parseWebhook(raw) {
-    try { const u = new URL(raw.trim()); if (!/^https?:$/.test(u.protocol) || !/^(discord\.com|discordapp\.com|canary\.discord\.com|ptb\.discord\.com)$/.test(u.hostname) || !/^\/api\/webhooks\/[^/]+\/[^/]+$/.test(u.pathname)) return null; return u; } catch { return null; }
+    try { const u = new URL(raw.trim()); if (u.protocol !== "https:" || u.username || u.password || u.port || u.search || u.hash || !/^(discord\.com|discordapp\.com|canary\.discord\.com|ptb\.discord\.com)$/.test(u.hostname) || !/^\/api\/(?:v\d+\/)?webhooks\/\d+\/[A-Za-z0-9_-]+$/.test(u.pathname)) return null; return u; } catch { return null; }
   }
   function splitEvents(text) { const re = /【([^】\n]{1,40})】\s*[『「“"]([^』」”"]+)[』」”"]/g; const starts = []; let m; while ((m = re.exec(text))) starts.push({ index:m.index, region:m[1].trim(), title:m[2].trim(), end:re.lastIndex }); if (!starts.length) return { events:[], warnings:["イベント開始形式（【地域】『タイトル』）を認識できませんでした。"] }; const events = starts.map((s, i) => ({ raw:text.slice(s.index, i + 1 < starts.length ? starts[i + 1].index : text.length).trim(), region:s.region, title:s.title })); const prefix = text.slice(0, starts[0].index).trim(); return { events, warnings:prefix ? [`先頭にイベントとして認識できない文章があります（${prefix.length}文字）。`] : [] }; }
   function extractLinks(raw) { const links = []; const md = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g; let m; while ((m = md.exec(raw))) links.push({ label:m[1], url:m[2] }); const plain = raw.match(/https?:\/\/[^\s)]+/g) || []; plain.forEach((url) => { if (!links.some((x) => x.url === url)) links.push({ label:url, url }); }); return links.filter((x) => !/^(https?:\/\/t\.co|https?:\/\/[^/]+\/(?:hashtag|emoji)\b)/i.test(x.url)); }
@@ -21,11 +21,85 @@
   function validateEvent(e) { const errors=[]; if(!e.title)errors.push("タイトルがありません"); if(threadName(e).length>100)errors.push("スレッド名が100文字を超えています"); if(contentFor(e).length>2000)errors.push("本文が2000文字を超えています"); if(e.url){try{const u=new URL(e.url);if(!/^https?:$/.test(u.protocol))errors.push("公式URLはhttp/httpsのみです")}catch{errors.push("公式URLが不正です")}} return errors; }
   function renderCards() { $("count").textContent=`${state.events.length}件`; $("cards").innerHTML=state.events.map((e,i)=>`<article class="card ${e.selected?"selected":""} ${e.duplicate?"duplicate":""}" data-id="${e.id}"><div class="card-top"><input class="select-event" type="checkbox" ${e.selected?"checked":""} aria-label="${escapeHtml(e.title)}を投稿対象にする"><div><h3>${escapeHtml(e.title||"無題のイベント")}</h3><p class="hint">元文 ${e.raw.length}文字・状態：${e.status}</p></div></div><div class="card-grid"><label>地域<input data-field="region" value="${escapeHtml(e.region)}"></label><label>タイトル<input data-field="title" value="${escapeHtml(e.title)}"></label><label>開始日<input data-field="start" value="${escapeHtml(e.start)}" placeholder="2026/10/23"></label><label>終了日<input data-field="end" value="${escapeHtml(e.end)}" placeholder="2027/01/17"></label><label>公式URL<input data-field="url" value="${escapeHtml(e.url)}" placeholder="https://..."></label><label>ハッシュタグ<input data-field="tags" value="${escapeHtml(e.tags)}"></label><label style="grid-column:1/-1">説明<textarea data-field="description">${escapeHtml(e.description)}</textarea></label></div>${e.warnings.length?`<p class="warning">⚠ ${e.warnings.map(escapeHtml).join(" / ")}</p>`:""}</article>`).join(""); $("selected-count").textContent=`投稿予定 ${state.events.filter(e=>e.selected).length}件`; $("review").disabled=!state.events.some(e=>e.selected); }
   function renderPreview() { const selected=state.events.filter(e=>e.selected); $("preview").innerHTML=selected.map((e)=>`<article><strong>${escapeHtml(threadName(e))}</strong><br><br>${escapeHtml(contentFor(e))}</article>`).join(""); }
-  function saveUrl() { const u=parseWebhook($("webhook").value); if($("remember").checked&&u)localStorage.setItem(STORE,u.href); else localStorage.removeItem(STORE); }
-  async function postOne(e) { const url=parseWebhook($("webhook").value); const response=await fetch(`${url.href}?wait=true`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({content:contentFor(e),thread_name:threadName(e),allowed_mentions:{parse:[]}})}); if(response.status===429){let wait=Number(response.headers.get("Retry-After"))||0;try{const body=await response.json();wait=Number(body.retry_after)||wait}catch{} const err=new Error(`レート制限。${Math.ceil(wait)}秒待ってください。`);err.rate=true;throw err} if(!response.ok){let msg=`HTTP ${response.status}`;try{const body=await response.json();if(body.message)msg+=`：${body.message}`}catch{} throw new Error(msg)} let body=null;try{body=await response.json()}catch{} return body; }
-  async function postSelected() { if(state.posting)return; const url=parseWebhook($("webhook").value); if(!url){alert("Webhook URLを確認してください。");return} const selected=state.events.filter(e=>e.selected); const invalid=selected.flatMap((e)=>validateEvent(e).map((x)=>`${e.title}: ${x}`)); if(invalid.length){alert(`投稿できないイベントがあります。\n\n${invalid.join("\n")}`);return} if(!confirm(`${selected.length}件をDiscordへ投稿します。よろしいですか？`))return; state.posting=true; $("post").disabled=true; $("status-panel").classList.remove("hidden"); const results=[]; for(const e of selected){e.status="送信中"; try{const body=await postOne(e);e.status="成功";results.push({e,ok:true,body})}catch(error){e.status=error.rate?"結果不明":"失敗";results.push({e,ok:false,error})}} state.posting=false; $("post").disabled=false; renderResults(results); }
-  function renderResults(results) { const ok=results.filter(x=>x.ok).length; $("result-summary").textContent=`${ok}/${results.length}件が成功しました。`; $("post-results").innerHTML=results.map(({e,ok,body,error})=>`<div class="result ${ok?"ok":"error"}"><strong>${ok?"成功":"失敗・"+e.status}：</strong>${escapeHtml(e.title)}${ok&&body?.id?` <small>メッセージID ${escapeHtml(body.id)}</small>`:`<br><small>${escapeHtml(error?.message||"")}</small>`}</div>`).join(""); const failed=results.filter(x=>!x.ok).map(x=>x.e); $("retry-failed").classList.toggle("hidden",!failed.length); $("retry-failed").onclick=()=>{failed.forEach(e=>e.selected=true);postSelected()}; }
+  function saveUrl() {
+    try { const u=parseWebhook($("webhook").value); if($("remember").checked&&u)localStorage.setItem(STORE,u.href); else localStorage.removeItem(STORE); }
+    catch { $("input-status").textContent="端末保存を利用できません。URLはこの画面内だけで使用します。"; $("remember").checked=false; }
+  }
+  async function postOne(e, endpoint) {
+    for (let attempt=0; attempt<4; attempt++) {
+      const controller=new AbortController();
+      let timer;
+      try {
+        const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(Object.assign(new Error("タイムアウト。投稿された可能性があります。Discordで確認してください。"),{unknown:true}));},30000);});
+        const task=(async()=>{
+          const response=await fetch(endpoint,{method:"POST",redirect:"error",credentials:"omit",referrerPolicy:"no-referrer",signal:controller.signal,headers:{"Content-Type":"application/json"},body:JSON.stringify({content:contentFor(e),thread_name:threadName(e),allowed_mentions:{parse:[]}})});
+          let body=null;try{body=await response.json()}catch{}
+          if(response.status===429) {
+            const header=response.headers.get("Retry-After");
+            const numeric=Number(header);
+            const headerWait=header && !Number.isFinite(numeric)?Math.max(0,(Date.parse(header)-Date.now())/1000):numeric;
+            const seconds=Math.max(Number(body?.retry_after)||0,headerWait||0);
+            return {rate:true,seconds};
+          }
+          if(!response.ok) throw Object.assign(new Error("HTTP "+response.status+(response.status>=500?"。サーバー障害。投稿結果をDiscordで確認してください。":"。Webhook設定・投稿内容を確認してください。")),{known:true,unknown:response.status>=500});
+          if(!body?.id || !body?.channel_id) throw Object.assign(new Error("成功応答の投稿IDを確認できません。Discordで確認してください。"),{unknown:true});
+          return {body};
+        })();
+        const result=await Promise.race([task,timeout]);
+        clearTimeout(timer);
+        if(result.rate){
+          if(attempt===3 || !Number.isFinite(result.seconds) || result.seconds>60) throw Object.assign(new Error("HTTP 429。レート制限。時間を置いて失敗イベントを再送信してください。"),{known:true});
+          $("result-summary").textContent="レート制限のため "+Math.ceil(result.seconds)+"秒待機中…";
+          await new Promise(resolve=>setTimeout(resolve,Math.max(1,result.seconds*1000)));
+          continue;
+        }
+        return result.body;
+      } catch(error) {
+        if(error.unknown || error.known) throw error;
+        if(error instanceof TypeError || error.name==="AbortError") throw Object.assign(new Error("CORS・ネットワーク障害。投稿結果は不明です。Discordで確認してください。"),{unknown:true});
+        throw Object.assign(new Error("通信を完了できませんでした。投稿結果は不明です。Discordで確認してください。"),{unknown:true});
+      } finally {clearTimeout(timer);}
+    }
+  }
+  async function postSelected(failedOnly=false) {
+    if(state.posting)return;
+    const url=parseWebhook($("webhook").value);
+    if(!url){$("input-status").textContent="Webhook URLを確認してください。";alert("Webhook URLを確認してください。");return}
+    const selected=state.events.filter(e=>failedOnly?e.status==="失敗":e.selected&&(e.status==="未送信"||e.status==="失敗"));
+    if(!selected.length){alert("送信可能なイベントがありません。成功・結果不明は再送信しません。");return;}
+    const invalid=selected.flatMap(e=>validateEvent(e).map(x=>e.title+": "+x));
+    if(invalid.length){alert("投稿できないイベントがあります。\n"+invalid.join("\n"));return;}
+    if(!confirm(selected.length+"件をDiscordへ投稿します。よろしいですか？"))return;
+    const queue=selected.map(e=>({original:e,snapshot:{...e}}));
+    url.searchParams.set("wait","true");
+    saveUrl(); state.posting=true;
+    const controls=["post","parse","webhook","remember","forget","review","select-all","clear-all","retry-failed"];
+    controls.forEach(id=>$(id).disabled=true);
+    $("status-panel").classList.remove("hidden");
+    try {
+      for(const {original:e,snapshot} of queue){
+        e.status="送信中";renderCards();renderResults();
+        try{const body=await postOne(snapshot,url.href);e.status="成功";e.messageId=body.id;e.channelId=body.channel_id;e.error="";e.selected=false;}
+        catch(error){e.status=error.unknown?"結果不明":"失敗";e.error=error.message;e.selected=false;}
+        renderResults();
+      }
+    } finally {
+      state.posting=false;controls.forEach(id=>$(id).disabled=false);renderCards();renderResults();
+    }
+  }
+  function renderResults() {
+    const results=state.events.filter(e=>e.status!=="未送信");
+    $("result-summary").textContent=results.filter(e=>e.status==="成功").length+"/"+results.length+"件が成功しました。";
+    $("post-results").innerHTML=results.map(e=>'<div class="result '+(e.status==="成功"?"ok":"error")+'"><strong>'+escapeHtml(e.status)+'：</strong>'+escapeHtml(e.title)+(e.status==="成功"?'<br><a target="_blank" rel="noopener noreferrer" href="https://discord.com/channels/@me/'+encodeURIComponent(e.channelId)+'/'+encodeURIComponent(e.messageId)+'">投稿を開く</a>':'<br><small>'+escapeHtml(e.error||"")+'</small>')+'</div>').join("");
+    $("retry-failed").classList.toggle("hidden",!state.events.some(e=>e.status==="失敗"));
+    $("retry-failed").onclick=()=>postSelected(true);
+  }
   $("toggle-secret").onclick=()=>{const input=$("webhook");input.type=input.type==="password"?"text":"password";$("toggle-secret").textContent=input.type==="password"?"表示":"隠す"}; $("remember").onchange=saveUrl; $("forget").onclick=()=>{localStorage.removeItem(STORE);$("webhook").value="";$("remember").checked=false}; $("parse").onclick=()=>{const result=runAnalysis($("source").value);state.events=result.events;if(!state.events.length){$("input-status").textContent=result.warnings.join(" ");return}$("results-panel").classList.remove("hidden");$("confirm-panel").classList.add("hidden");renderCards();$("input-status").textContent=result.warnings.join(" ")||`${state.events.length}件を認識しました。`}; $("cards").addEventListener("change",(ev)=>{const card=ev.target.closest(".card");if(!card)return;const e=state.events.find(x=>x.id===card.dataset.id);if(ev.target.classList.contains("select-event"))e.selected=ev.target.checked;else if(ev.target.dataset.field)e[ev.target.dataset.field]=ev.target.value;card.classList.toggle("selected",e.selected);$("selected-count").textContent=`投稿予定 ${state.events.filter(x=>x.selected).length}件`;$("review").disabled=!state.events.some(x=>x.selected)}); $("cards").addEventListener("input",(ev)=>{const card=ev.target.closest(".card"),e=state.events.find(x=>x.id===card?.dataset.id);if(e&&ev.target.dataset.field)e[ev.target.dataset.field]=ev.target.value}); $("select-all").onclick=()=>{state.events.forEach(e=>e.selected=true);renderCards()};$("clear-all").onclick=()=>{state.events.forEach(e=>e.selected=false);renderCards()};$("review").onclick=()=>{renderPreview();$("confirm-panel").classList.remove("hidden");window.scrollTo({top:$('confirm-panel').offsetTop-20,behavior:"smooth"})};$("back").onclick=()=>$("confirm-panel").classList.add("hidden");$("post").onclick=postSelected;
-  const stored=localStorage.getItem(STORE);if(stored&&parseWebhook(stored)){$("webhook").value=stored;$("remember").checked=true}
+  $("webhook").addEventListener("input",saveUrl);
+  $("post").onclick=()=>postSelected();
+  const removeSaved=()=>{try{localStorage.removeItem(STORE);}catch{$("input-status").textContent="保存済みURLを削除できません。ブラウザのサイトデータを削除してください。";}};
+  $("forget").onclick=()=>{removeSaved();$("webhook").value="";$("remember").checked=false;};
+  try {const stored=localStorage.getItem(STORE);if(stored&&parseWebhook(stored)){$("webhook").value=stored;$("remember").checked=true;}}catch{$("input-status").textContent="端末保存を利用できません。";}
+
   window.EventPoster={splitEvents,extractLinks,parsePeriod,runAnalysis,contentFor,validateEvent,parseWebhook};
 }());
