@@ -2,6 +2,8 @@ import { pbkdf2Async } from '@noble/hashes/pbkdf2.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 
 const TAGS = ['周遊型','ホール型','ルーム型','オンライン','持ち帰り','イマーシブ','謎解き','ホラー'];
+const DIAGNOSTIC_COOLDOWN_MS=60000;
+const diagnosticRateLimits=new WeakMap();
 const enc = new TextEncoder();
 const hex = bytes => Array.from(new Uint8Array(bytes), x=>x.toString(16).padStart(2,'0')).join('');
 const unhex = value => Uint8Array.from(value.match(/../g)||[], x=>parseInt(x,16));
@@ -68,6 +70,22 @@ async function discord(env,path) {
   const response=await fetch('https://discord.com/api/v10/'+path,{headers:{Authorization:'Bot '+env.DISCORD_BOT_TOKEN},redirect:'error',signal:AbortSignal.timeout(10000)});
   return response;
 }
+async function diagnosticFetch(url,headers) {
+  const controller=new AbortController();let timedOut=false;
+  const timer=setTimeout(()=>{timedOut=true;controller.abort();},10000);
+  try {
+    const response=await fetch(url,{headers,redirect:'manual',signal:controller.signal});
+    return response.status>=300&&response.status<400?{kind:'redirect',status:response.status}:{kind:'http_response',status:response.status};
+  } catch { return {kind:timedOut?'timeout':'unknown_fetch_error'}; }
+  finally { clearTimeout(timer); }
+}
+async function runDiscordDiagnostic(env) {
+  const anonymous=await diagnosticFetch('https://discord.com/api/v10/gateway',{});
+  const bot=await diagnosticFetch('https://discord.com/api/v10/channels/'+env.DISCORD_FORUM_CHANNEL_ID,{Authorization:'Bot '+env.DISCORD_BOT_TOKEN});
+  const result={anonymous,bot};
+  console.log(JSON.stringify({event:'discord_connectivity_diagnostic',anonymous,bot}));
+  return result;
+}
 export default {
   async fetch(request,env) {
     const origin=request.headers.get('Origin');
@@ -87,6 +105,15 @@ export default {
         let body;try{body=await smallJson(request);}catch{return new Response(JSON.stringify({error:'入力を確認してください。'}),{status:400,headers:{...headers,'Content-Type':'application/json'}});}
         if(typeof body.password!=='string'||body.password.length<1||body.password.length>256)response=json({error:'入力を確認してください。'},400);
         else {stage='auth_login';response=await auth(env,{action:'login',password:body.password});}
+      } else if(path==='/api/diagnostics/discord'&&request.method==='POST') {
+        const token=request.headers.get('Authorization')?.match(/^Bearer ([a-f0-9.]{1,160})$/)?.[1]||'';
+        stage='auth_check';
+        response=await auth(env,{action:'check',token});
+        if(response.ok) {
+          const now=Date.now(),last=diagnosticRateLimits.get(env)||0;
+          if(now-last<DIAGNOSTIC_COOLDOWN_MS)response=json({error:'診断はしばらく待ってから再実行してください。'},429);
+          else {diagnosticRateLimits.set(env,now);stage='discord_diagnostic';response=json(await runDiscordDiagnostic(env));}
+        }
       } else if((path==='/api/logout'&&request.method==='POST')||(path==='/api/session'&&request.method==='GET')||(path==='/api/forum/tags'&&request.method==='GET')||(path==='/api/forum/webhook-check'&&request.method==='POST')) {
         const token=request.headers.get('Authorization')?.match(/^Bearer ([a-f0-9.]{1,160})$/)?.[1]||'';
         stage='auth_check';
