@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="複数のイベント情報をDiscordフォーラムへ投稿するツール">
-  <title>Discord Event Poster</title><link rel="stylesheet" href="styles.css">
+  <title>Discord Event Poster</title><link rel="stylesheet" href="styles.css?v=0.1.0-gate1">
 </head>
 <body>
   <main class="shell">
@@ -18,5 +18,5 @@
     <section id="confirm-panel" class="panel hidden" aria-labelledby="confirm-title"><div class="section-heading"><span class="step">03</span><div><h2 id="confirm-title">投稿前の最終確認</h2><p>この操作で、選択したイベントごとに1スレッド作成します。</p></div></div><div id="preview" class="preview"></div><div class="post-bar"><button id="back" class="small-button" type="button">編集へ戻る</button><button id="post" class="primary" type="button">Discordへ投稿する</button></div></section>
     <section id="status-panel" class="panel hidden" aria-labelledby="status-title"><div class="section-heading"><span class="step">04</span><div><h2 id="status-title">投稿結果</h2><p id="result-summary"></p></div></div><div id="post-results" class="post-results"></div><button id="retry-failed" class="small-button hidden" type="button">失敗したものを再送信</button></section>
     <footer><p>Webhook URLは認証情報です。ログ・解析サービス・URLクエリには送信しません。</p><a href="https://github.com/p156/discord-event-poster" target="_blank" rel="noopener noreferrer">GitHub</a></footer>
-  </main><script src="app.js"></script>
+  </main><script src="app.js?v=0.1.0-gate1"></script>
 </body></html>
