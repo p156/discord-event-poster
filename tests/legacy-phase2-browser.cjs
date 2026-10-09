@@ -1,13 +1,14 @@
 const {chromium}=require('playwright');
 const fs=require('node:fs/promises');const path=require('node:path');const assert=require('node:assert/strict');
 const names=['周遊型','ホール型','ルーム型','オンライン','持ち帰り','イマーシブ','謎解き','ホラー'];
+const historical=name=>fs.readFile(path.join(__dirname,'fixtures/legacy-step3',name));
 (async()=>{
  const browser=await chromium.launch({channel:'msedge',headless:true});
  try{
  const context=await browser.newContext({viewport:{width:390,height:900}}),page=await context.newPage();let logged=false,match=true;const posts=[],errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.type()==='confirm'?d.accept():d.dismiss());
  await context.route('**/*',async route=>{
  const r=route.request(),u=new URL(r.url());
- if(u.origin==='https://poster.test'){const name=u.pathname.split('/').pop()||'index.html';return route.fulfill({contentType:name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html',body:await fs.readFile(path.join(__dirname,'..',name))});}
+ if(u.origin==='https://poster.test'){const name=u.pathname.split('/').pop()||'index.html';return route.fulfill({contentType:name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html',body:await historical(name)});}
  if(u.hostname==='discord-event-poster-api.monma5435.workers.dev'){
  let body,status=200;
  if(u.pathname==='/api/login'){logged=true;body={token:'TEST_ONLY_SESSION',expiresAt:Date.now()+3600000};}

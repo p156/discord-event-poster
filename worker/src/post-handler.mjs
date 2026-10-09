@@ -1,9 +1,10 @@
-// INTERNAL ROUTER ONLY: deliberately NOT imported by the public Worker entrypoint.
+// Routed only behind the server-side FORUM_POSTS_ENABLED gate.
 import {hasAllowedHost} from './request-boundary.mjs';
 import {readPostRequest,PostInputError} from './forum-input.mjs';
 import {fixedDiscordConfig} from './discord-client.mjs';
 import {prepareForumPost,sendPreparedForumPost} from './forum-posts.mjs';
 import {UUID,payloadHash,signOperation,verifyOperation,internalProof,OperationError} from './post-keys.mjs';
+import {createDiscordFetch} from './discord-cooldown.mjs';
 function reply(body,status,origin,extra={}){return Response.json(body,{status,headers:{'Cache-Control':'no-store','Vary':'Origin','X-Content-Type-Options':'nosniff',...(origin?{'Access-Control-Allow-Origin':origin,'Access-Control-Expose-Headers':'Retry-After,Location'}:{}),...extra}});}
 function rejected(code,status,requestId,origin,fields=[],claims){return reply({apiVersion:1,requestId,operationId:claims?.operationId||null,status:'not_accepted',replayed:false,attempt:0,expiresAt:claims?new Date(claims.expiresAt).toISOString():null,safeToRetry:false,retryAfterSeconds:null,error:{code,message:'投稿処理を完了できませんでした。',fields},result:null},status,origin);}
 async function call(env,body,signed=true){
@@ -51,7 +52,7 @@ export function createPostHandler({fetchImpl,timeoutMs}={}){
       if(!['not_started','retryable'].includes(current.record.status)||!current.record.safeToRetry)return stateReply(current,requestId,origin);
       if(claims.forumId!==env.DISCORD_FORUM_CHANNEL_ID)throw new OperationError('TARGET_CHANGED',409);
       if(claims.expiresAt-Date.now()<120000)throw new OperationError('OPERATION_EXPIRING',409);
-      const prepared=await prepareForumPost(env,p,{fetchImpl,timeoutMs});
+      const prepared=await prepareForumPost(env,p,{fetchImpl:createDiscordFetch(env,token,fetchImpl),timeoutMs});
       if(prepared.outcome!=='prepared'){const answer=await call(env,{action:'post.preflight-failure',token,claims,failure:{code:prepared.code==='FORUM_RESPONSE_INVALID'?'SERVICE_UNAVAILABLE':prepared.code,safeToRetry:prepared.safeToRetry,httpStatus:prepared.httpStatus,retry:prepared.retry}});return stateReply(answer,requestId,origin,prepared.httpStatus);}
       const reserved=await call(env,{action:'post.reserve',token,claims});
       if(!reserved.leaseId)return stateReply(reserved,requestId,origin);

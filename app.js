@@ -10,9 +10,6 @@
   const today = new Date();
 
   function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
-  function parseWebhook(raw) {
-    try { const u = new URL(raw.trim()); if (u.protocol !== "https:" || u.username || u.password || u.port || u.search || u.hash || !/^(discord\.com|discordapp\.com|canary\.discord\.com|ptb\.discord\.com)$/.test(u.hostname) || !/^\/api\/(?:v\d+\/)?webhooks\/\d+\/[A-Za-z0-9_-]+$/.test(u.pathname)) return null; return u; } catch { return null; }
-  }
   function splitEvents(text) { const re = /【([^】\n]{1,40})】\s*[『「“"]([^』」”"]+)[』」”"]/g; const starts = []; let m; while ((m = re.exec(text))) starts.push({ index:m.index, region:m[1].trim(), title:m[2].trim(), end:re.lastIndex }); if (!starts.length) return { events:[], warnings:["イベント開始形式（【地域】『タイトル』）を認識できませんでした。"] }; const events = starts.map((s, i) => ({ raw:text.slice(s.index, i + 1 < starts.length ? starts[i + 1].index : text.length).trim(), region:s.region, title:s.title })); const prefix = text.slice(0, starts[0].index).trim(); return { events, warnings:prefix ? [`先頭にイベントとして認識できない文章があります（${prefix.length}文字）。`] : [] }; }
   function extractLinks(raw) { const links = []; const md = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g; let m; while ((m = md.exec(raw))) links.push({ label:m[1], url:m[2] }); const plain = raw.match(/https?:\/\/[^\s)]+/g) || []; plain.forEach((url) => { if (!links.some((x) => x.url === url)) links.push({ label:url, url }); }); return links.filter((x) => !/^(https?:\/\/t\.co|https?:\/\/[^/]+\/(?:hashtag|emoji)\b)/i.test(x.url)); }
   function datePart(raw) { const m = raw.match(/(?:^|[\s\n])((?:\d{4}[年\/-])?\d{1,2})[月\/-](\d{1,2})(?:日)?/); return m ? { month:m[1].replace(/^\d{4}[年\/-]/, ""), day:m[2], explicitYear:/^\d{4}/.test(m[1]) } : null; }
@@ -24,137 +21,112 @@
   function contentFor(e) { const period=e.start||e.end?`${e.start||"不明"}〜${e.end||""}`:"不明"; return `📍 **開催地域：${e.region||"不明"}**\n\n📅 **開催期間：${period}**\n\n${e.description||""}\n\n${e.url?`🔗 **公式サイト**\n${e.url}\n\n`:""}${e.tags||""}`.trim(); }
   function threadName(e) { return `【${e.region||"不明"}】${e.title}`; }
   function validateEvent(e) { const errors=[]; if((e.selectedTags||[]).length>5)errors.push("タグは最大5件です"); if(!e.title)errors.push("タイトルがありません"); if(threadName(e).length>100)errors.push("スレッド名が100文字を超えています"); if(contentFor(e).length>2000)errors.push("本文が2000文字を超えています"); if(e.url){try{const u=new URL(e.url);if(!/^https?:$/.test(u.protocol))errors.push("公式URLはhttp/httpsのみです")}catch{errors.push("公式URLが不正です")}} return errors; }
-  function renderCards() { $("count").textContent=`${state.events.length}件`; $("cards").innerHTML=state.events.map((e,i)=>`<article class="card ${e.selected?"selected":""} ${e.duplicate?"duplicate":""}" data-id="${e.id}"><div class="card-top"><input ${state.posting?"disabled":""} class="select-event" type="checkbox" ${e.selected?"checked":""} aria-label="${escapeHtml(e.title)}を投稿対象にする"><div><h3>${escapeHtml(e.title||"無題のイベント")}</h3><p class="hint">元文 ${e.raw.length}文字・状態：${e.status}</p></div></div><div class="card-grid"><label>地域<input ${state.posting?"disabled":""} data-field="region" value="${escapeHtml(e.region)}"></label><label>タイトル<input ${state.posting?"disabled":""} data-field="title" value="${escapeHtml(e.title)}"></label><label>開始日<input ${state.posting?"disabled":""} data-field="start" value="${escapeHtml(e.start)}" placeholder="2026/10/23"></label><label>終了日<input ${state.posting?"disabled":""} data-field="end" value="${escapeHtml(e.end)}" placeholder="2027/01/17"></label><label>公式URL<input ${state.posting?"disabled":""} data-field="url" value="${escapeHtml(e.url)}" placeholder="https://..."></label><label>ハッシュタグ<input ${state.posting?"disabled":""} data-field="tags" value="${escapeHtml(e.tags)}"></label><label style="grid-column:1/-1">説明<textarea ${state.posting?"disabled":""} data-field="description">${escapeHtml(e.description)}</textarea></label><fieldset class="tag-field"><legend>イベントタグ（手動）</legend>${Object.keys(TAG_RULES).map(tag=>`<label><input ${state.posting?"disabled":""} type="checkbox" data-tag="${tag}" ${(e.selectedTags||[]).includes(tag)?"checked":""}>${tag}</label>`).join("")}<button type="button" class="small-button auto-tag" ${state.posting?"disabled":""}>本文から自動判定</button><p class="hint">${e.tagReasons?.length?`判定根拠：${e.tagReasons.map(escapeHtml).join("／")}`:"自動判定はこのボタンを押した時だけ実行します。"}</p></fieldset></div>${e.warnings.length?`<p class="warning">⚠ ${e.warnings.map(escapeHtml).join(" / ")}</p>`:""}</article>`).join(""); $("selected-count").textContent=`投稿予定 ${state.events.filter(e=>e.selected).length}件`; $("review").disabled=state.posting||!state.events.some(e=>e.selected); }
-  function renderPreview() { const selected=state.events.filter(e=>e.selected); $("preview").innerHTML=selected.map((e)=>`<article><strong>${escapeHtml(threadName(e))}</strong><br><br>${escapeHtml(contentFor(e))}<br>タグ：${escapeHtml((e.selectedTags||[]).join("・")||"なし")}</article>`).join(""); }
-  function saveUrl() {
-    try { const u=parseWebhook($("webhook").value); if($("remember").checked&&u)localStorage.setItem(STORE,u.href); else localStorage.removeItem(STORE); }
-    catch { $("input-status").textContent="端末保存を利用できません。URLはこの画面内だけで使用します。"; $("remember").checked=false; }
+  function renderCards() { $("count").textContent=`${state.events.length}件`; $("cards").innerHTML=state.events.map((e,i)=>`<article class="card ${e.selected?"selected":""} ${e.duplicate?"duplicate":""}" data-id="${e.id}"><div class="card-top"><input ${(state.posting||e.operation)?"disabled":""} class="select-event" type="checkbox" ${e.selected?"checked":""} aria-label="${escapeHtml(e.title)}を投稿対象にする"><div><h3>${escapeHtml(e.title||"無題のイベント")}</h3><p class="hint">元文 ${e.raw.length}文字・状態：${e.status}</p></div></div><div class="card-grid"><label>地域<input ${(state.posting||e.operation)?"disabled":""} data-field="region" value="${escapeHtml(e.region)}"></label><label>タイトル<input ${(state.posting||e.operation)?"disabled":""} data-field="title" value="${escapeHtml(e.title)}"></label><label>開始日<input ${(state.posting||e.operation)?"disabled":""} data-field="start" value="${escapeHtml(e.start)}" placeholder="2026/10/23"></label><label>終了日<input ${(state.posting||e.operation)?"disabled":""} data-field="end" value="${escapeHtml(e.end)}" placeholder="2027/01/17"></label><label>公式URL<input ${(state.posting||e.operation)?"disabled":""} data-field="url" value="${escapeHtml(e.url)}" placeholder="https://..."></label><label>ハッシュタグ<input ${(state.posting||e.operation)?"disabled":""} data-field="tags" value="${escapeHtml(e.tags)}"></label><label style="grid-column:1/-1">説明<textarea ${(state.posting||e.operation)?"disabled":""} data-field="description">${escapeHtml(e.description)}</textarea></label><fieldset class="tag-field"><legend>イベントタグ（手動）</legend>${Object.keys(TAG_RULES).map(tag=>`<label><input ${(state.posting||e.operation)?"disabled":""} type="checkbox" data-tag="${tag}" ${(e.selectedTags||[]).includes(tag)?"checked":""}>${tag}</label>`).join("")}<button type="button" class="small-button auto-tag" ${(state.posting||e.operation)?"disabled":""}>本文から自動判定</button><p class="hint">${e.tagReasons?.length?`判定根拠：${e.tagReasons.map(escapeHtml).join("／")}`:"自動判定はこのボタンを押した時だけ実行します。"}</p></fieldset></div>${e.warnings.length?`<p class="warning">⚠ ${e.warnings.map(escapeHtml).join(" / ")}</p>`:""}</article>`).join(""); $("selected-count").textContent=`投稿予定 ${state.events.filter(e=>e.selected).length}件`; $("review").disabled=state.posting||!state.events.some(e=>e.selected); }
+  function renderPreview() { const selected=state.events.filter(e=>e.selected); $("preview").innerHTML=selected.map((e)=>`<article><strong>${escapeHtml(threadName(e).replace(/\r\n?/g,'\n').trim())}</strong><br><br>${escapeHtml(contentFor(e).replace(/\r\n?/g,'\n'))}<br>タグ：${escapeHtml((e.selectedTags||[]).join("・")||"なし")}</article>`).join(""); }
+
+  const client=window.PosterClient.create();
+  state.history=client.operations().map((m,i)=>({id:'restored-'+m.operationId,title:'復元した操作 '+(i+1),status:'状態未確認',operation:m,error:'ログイン後、同じ操作IDで状態を確認してください。'}));
+  state.reviewed=null;
+  const controls=['post','parse','review','select-all','clear-all','worker-login','worker-logout','fetch-tags','back'];
+  const labels={not_started:'未開始',preparing:'投稿準備中',sending:'投稿送信中',succeeded:'成功',retryable:'再試行待ち',failed:'失敗',unknown:'結果不明',expired:'期限切れ'};
+  const messages={STATE_UNAVAILABLE:'永続化障害。投稿を開始できません。既存操作の状態を確認してください。',STORAGE_UNAVAILABLE:'端末の操作情報を保存できません。投稿は開始しません。',STORAGE_FULL:'操作情報の保存上限です。未解決操作を保護するため、新規投稿を停止します。',SESSION_REQUIRED:'投稿にはログインが必要です。',SESSION_EXPIRED:'認証切れです。再ログイン後、同じ操作の状態を確認してください。',POSTS_DISABLED:'本番投稿機能はまだ公開されていません。',APP_RATE_LIMITED:'全体の投稿制限です。待機後、同じ操作を確認してください。',DISCORD_RATE_LIMITED:'Discordの投稿制限です。待機後、同じ操作を確認してください。',CONTENT_INVALID:'入力エラー。タイトル・本文の文字数と制御文字を確認してください。',TAG_INVALID:'入力エラー。対象フォーラムのタグ設定を確認してください。',TAG_REQUIRED:'入力エラー。タグの選択が必要です。',TAG_PERMISSION_UNVERIFIED:'タグの使用権限を確認できません。',KEY_PAYLOAD_CONFLICT:'発行済み操作と本文が一致しません。内容を変更した操作は送信しません。',TARGET_CHANGED:'投稿先の設定が変更されています。既存キーは使えません。',OPERATION_EXPIRING:'操作の有効期限が近いため投稿を開始できません。',OPERATION_EXPIRED:'操作の30日期限が切れています。古い操作は再送しません。',NETWORK_UNKNOWN:'ネットワーク障害・タイムアウト。自動再送せず、同じ操作の状態を確認してください。',RESPONSE_INVALID:'応答を確認できません。同じ操作の状態を確認してください。',OUTCOME_UNKNOWN:'投稿結果不明です。自動再送せず、Discordと操作状態を確認してください。',INPUT_REJECTED:'入力エラー。タイトル・本文・タグ設定を確認してください。',DISCORD_REQUEST_REJECTED:'入力エラー。Discordが投稿内容を拒否しました。',DISCORD_PERMISSION_DENIED:'Botの投稿権限を確認してください。',DISCORD_CREDENTIAL_REJECTED:'Botの認証設定を確認してください。',DISCORD_TARGET_UNAVAILABLE:'固定投稿先を確認できません。',SERVICE_UNAVAILABLE:'投稿の事前確認を完了できません。状態を確認してください。'};
+  const message=code=>messages[code]||'処理を完了できません。設定と操作状態を確認してください。';
+  function fingerprint(){return JSON.stringify(state.events.filter(e=>e.selected&&!e.operation).map(e=>[e.id,threadName(e),contentFor(e),e.selectedTags]));}
+  function lock(value){state.posting=value;controls.forEach(id=>$(id).disabled=value);renderCards();renderResults();}
+  function payloadFor(e){return client.normalize({threadName:threadName(e),content:contentFor(e),tagIds:appliedTagsFor(e).map(t=>t.id)});}
+  function allResults(){const ids=new Set(state.events.filter(e=>e.operation).map(e=>e.operation.operationId));return [...state.events.filter(e=>e.status!=='未送信'),...state.history.filter(e=>!ids.has(e.operation.operationId))];}
+  function safeResult(r){if(!r||['guildId','forumId','threadId','messageId'].some(k=>!window.PosterClient.snowflake(r[k])))return null;return {guildId:r.guildId,forumId:r.forumId,threadId:r.threadId,messageId:r.messageId,url:'https://discord.com/channels/'+r.guildId+'/'+r.threadId+'/'+r.messageId};}
+  function apply(e,packet){
+    const b=packet.data;
+    if(packet.status===410){e.status='期限切れ';e.error=message('OPERATION_EXPIRED');e.safeToRetry=false;return;}
+    if(!b||b.apiVersion!==1||(b.operationId&&b.operationId!==e.operation.operationId)||(!labels[b.status]&&b.status!=='not_accepted'))throw Object.assign(new Error(),{code:'RESPONSE_INVALID'});
+    if(b.status==='not_accepted'){e.status=b.error?.code==='STATE_UNAVAILABLE'?'永続化障害':packet.status===422||packet.status===400?'入力エラー':'状態未確認';e.error=message(b.error?.code);e.safeToRetry=false;return;}
+    if(b.operationId!==e.operation.operationId)throw Object.assign(new Error(),{code:'RESPONSE_INVALID'});
+    e.status=labels[b.status];e.safeToRetry=b.safeToRetry===true&&['not_started','retryable'].includes(b.status);
+    e.wait=Math.max(Number(b.retryAfterSeconds)||0,packet.retryAfterSeconds||0);if(!Number.isFinite(e.wait)||e.wait<0)e.wait=0;
+    e.error=b.error?message(b.error.code):'';e.selected=false;
+    if(b.status==='succeeded'){e.result=safeResult(b.result);if(!e.result)throw Object.assign(new Error(),{code:'RESPONSE_INVALID'});}
+    e.operation=client.remember({...e.operation,status:b.status});
   }
-  async function postOne(e, endpoint) {
-    for (let attempt=0; attempt<4; attempt++) {
-      const controller=new AbortController();
-      let timer;
-      try {
-        const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(Object.assign(new Error("タイムアウト。投稿された可能性があります。Discordで確認してください。"),{unknown:true}));},30000);});
-        const task=(async()=>{
-          const configured=e.resolvedTags||appliedTagsFor(e); const invalid=configured.filter(x=>x.id&&!/^\d+$/.test(x.id)); if(invalid.length) throw Object.assign(new Error("フォーラムタグ設定が不正です。設定を確認してください。"),{known:true}); const applied_tags=configured.filter(x=>x.id).map(x=>x.id); const payload={content:contentFor(e),thread_name:threadName(e),allowed_mentions:{parse:[]}}; if(applied_tags.length)payload.applied_tags=applied_tags; const response=await fetch(endpoint,{method:"POST",redirect:"error",credentials:"omit",referrerPolicy:"no-referrer",signal:controller.signal,headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-          let body=null;try{body=await response.json()}catch{}
-          if(response.status===429) {
-            const header=response.headers.get("Retry-After");
-            const numeric=Number(header);
-            const headerWait=header && !Number.isFinite(numeric)?Math.max(0,(Date.parse(header)-Date.now())/1000):numeric;
-            const seconds=Math.max(Number(body?.retry_after)||0,headerWait||0);
-            return {rate:true,seconds};
-          }
-          if(!response.ok) {
-            const hints={400:"不正なリクエストです。投稿内容を確認してください。",401:"Webhookの認証に失敗しました。URLを確認してください。",403:"投稿する権限がありません。Webhookの権限を確認してください。",404:"Webhookが見つかりません。削除されていないか確認してください。"};
-            throw Object.assign(new Error("HTTP "+response.status+"。"+(hints[response.status]||(response.status>=500?"サーバー障害。投稿結果をDiscordで確認してください。":"Webhook設定・投稿内容を確認してください。"))),{known:true,unknown:response.status>=500});
-          }
-          if(!body?.id || !body?.channel_id) throw Object.assign(new Error("成功応答の投稿IDを確認できません。Discordで確認してください。"),{unknown:true});
-          return {body};
-        })();
-        const result=await Promise.race([task,timeout]);
-        clearTimeout(timer);
-        if(result.rate){
-          if(attempt===3 || !Number.isFinite(result.seconds) || result.seconds>60) throw Object.assign(new Error("HTTP 429。レート制限。時間を置いて失敗イベントを再送信してください。"),{known:true});
-          $("result-summary").textContent="レート制限のため "+Math.ceil(result.seconds)+"秒待機中…";
-          await new Promise(resolve=>setTimeout(resolve,Math.max(1,result.seconds*1000)));
-          continue;
-        }
-        return result.body;
-      } catch(error) {
-        if(error.unknown || error.known) throw error;
-        if(error instanceof TypeError || error.name==="AbortError") throw Object.assign(new Error("CORS・ネットワーク障害。投稿結果は不明です。Discordで確認してください。"),{unknown:true});
-        throw Object.assign(new Error("通信を完了できませんでした。投稿結果は不明です。Discordで確認してください。"),{unknown:true});
-      } finally {clearTimeout(timer);}
-    }
+  function showError(e,error){e.safeToRetry=false;e.selected=false;e.status=['SESSION_REQUIRED','SESSION_EXPIRED'].includes(error.code)?'認証切れ':error.code==='STORAGE_UNAVAILABLE'?'保存障害':e.operation?'状態未確認':'投稿準備失敗';e.error=message(error.code);}
+  async function checkOperation(e){
+    try{apply(e,await client.status(e.operation));}catch(error){showError(e,error);}renderCards();renderResults();
   }
-  async function postSelected(failedOnly=false) {
+  async function enabledSession(){const s=await client.session();if(s.capabilities?.forumPosts!==true||s.capabilities?.apiVersion!==1)throw Object.assign(new Error(),{code:'POSTS_DISABLED'});}
+  async function send(e){
+    try{apply(e,await client.post(e.operation,e.payload));}
+    catch(error){showError(e,error);if(!['SESSION_REQUIRED','SESSION_EXPIRED','STORAGE_UNAVAILABLE','KEY_PAYLOAD_CONFLICT'].includes(error.code))await checkOperation(e);}
+  }
+  async function postSelected(){
     if(state.posting)return;
-    const url=parseWebhook($("webhook").value);
-    if(!url){$("input-status").textContent="Webhook URLを確認してください。";alert("Webhook URLを確認してください。");return}
-    const selected=state.events.filter(e=>failedOnly?e.status==="失敗":e.selected&&(e.status==="未送信"||e.status==="失敗"));
-    if(!selected.length){alert("送信可能なイベントがありません。成功・結果不明は再送信しません。");return;}
-    const invalid=selected.flatMap(e=>validateEvent(e).map(x=>e.title+": "+x));
-    const unconfigured=selected.flatMap(e=>(e.selectedTags||[]).filter(tag=>!forumConfig?.mapping?.[tag]).map(tag=>`${e.title}: ${tag}のタグIDが対象フォーラムに未設定です`));
-    if(unconfigured.length){alert("投稿できないタグ設定があります。\n"+unconfigured.join("\n"));return;}
-    if(invalid.length){alert("投稿できないイベントがあります。\n"+invalid.join("\n"));return;}
-    if(selected.some(e=>e.selectedTags?.length)){
-      state.posting=true;renderCards();
-      try{await verifyWebhookForum(url);}catch{alert("タグとWebhookの所属確認に失敗しました。ログイン・タグ取得・接続先を確認してください。");return;}
-      finally{state.posting=false;renderCards();}
-    }
-    if(!confirm(selected.length+"件をDiscordへ投稿します。よろしいですか？"))return;
-    const queue=selected.map(e=>({original:e,snapshot:{...e,selectedTags:[...(e.selectedTags||[])],resolvedTags:appliedTagsFor(e)}}));
-    url.searchParams.set("wait","true");
-    saveUrl(); state.posting=true;
-    const controls=["post","parse","webhook","remember","forget","review","select-all","clear-all","retry-failed","worker-login","worker-logout","fetch-tags"];
-    controls.forEach(id=>$(id).disabled=true);
-    $("status-panel").classList.remove("hidden");
-    try {
-      for(const {original:e,snapshot} of queue){
-        e.status="送信中";renderCards();renderResults();
-        try{const body=await postOne(snapshot,url.href);e.status="成功";e.messageId=body.id;e.channelId=body.channel_id;e.error="";e.selected=false;}
-        catch(error){e.status=error.unknown?"結果不明":"失敗";e.error=error.message;e.selected=false;}
+    const selected=state.events.filter(e=>e.selected&&!e.operation);
+    if(!selected.length){$('input-status').textContent='成功・結果不明・発行済み操作は通常の投稿ボタンで再送しません。';return;}
+    if(state.reviewed!==fingerprint()){renderPreview();state.reviewed=fingerprint();$('confirm-panel').classList.remove('hidden');$('input-status').textContent='投稿内容をプレビューで確認してから、もう一度投稿を押してください。';return;}
+    const invalid=selected.flatMap(e=>validateEvent(e).map(x=>e.title+': '+x));
+    const unset=selected.flatMap(e=>(e.selectedTags||[]).filter(tag=>!forumConfig?.mapping?.[tag]).map(tag=>e.title+': '+tag+'のタグIDが未設定です'));
+    if(invalid.length||unset.length){alert([...invalid,...unset].join('\n'));return;}
+    let queue;try{queue=selected.map(e=>({e,payload:payloadFor(e)}));}catch{alert(message('CONTENT_INVALID'));return;}
+    lock(true);
+    try{
+      await enabledSession();
+      if(!confirm(queue.length+'件をBot名義で投稿します。\n'+queue.map(x=>x.e.title).join('\n')+'\nよろしいですか？'))return;
+      $('status-panel').classList.remove('hidden');
+      for(const {e,payload} of queue){
+        e.payload=payload;e.status='投稿準備中';renderCards();renderResults();
+        try{
+          const hash=await client.hash(payload),known=!e.forceNewOperation&&client.operations().find(m=>m.payloadHash===hash);
+          if(known){e.operation=known;await checkOperation(e);if(!e.safeToRetry||e.wait>0)continue;}
+          else e.operation=await client.issue(payload);
+          e.status='投稿送信中';e.selected=false;renderCards();renderResults();await send(e);
+          if(e.status==='認証切れ')break;
+        }catch(error){showError(e,error);}
         renderResults();
       }
-    } finally {
-      state.posting=false;controls.forEach(id=>$(id).disabled=false);renderCards();renderResults();
+    }catch(error){$('auth-status').textContent=message(error.code);if(['SESSION_REQUIRED','SESSION_EXPIRED'].includes(error.code))$('app-password').focus?.();}
+    finally{lock(false);}
+  }
+  function renderResults(){
+    const rows=allResults();if(rows.length)$('status-panel').classList.remove('hidden');
+    $('result-summary').textContent=rows.filter(e=>e.status==='成功').length+'/'+rows.length+'件が成功しました。';
+    $('post-results').innerHTML=rows.map(e=>{
+      const m=e.operation,link=e.result?.url?'<br><a target="_blank" rel="noopener noreferrer" href="'+escapeHtml(e.result.url)+'">投稿を開く</a>':'';
+      const actions=m?'<div class="actions"><button class="small-button" data-check="'+m.operationId+'" '+(state.posting?'disabled':'')+'>同じ操作の状態を確認</button>'+(e.payload&&e.safeToRetry&&!e.wait?'<button class="small-button" data-retry="'+m.operationId+'" '+(state.posting?'disabled':'')+'>同じ操作キーで再開</button>':'')+(state.events.includes(e)?'<button class="small-button" data-repost="'+e.id+'" '+(state.posting?'disabled':'')+'>新しい操作として再投稿</button>':'')+'</div>':'';
+      return '<div class="result '+(e.status==='成功'?'ok':'error')+'"><strong>'+escapeHtml(e.status)+'：</strong>'+escapeHtml(e.title)+link+'<br><small>'+escapeHtml(e.error||'')+(e.wait?' 待機時間：'+Math.ceil(e.wait)+'秒。待機後に状態を確認してください。':'')+'</small>'+actions+'</div>';
+    }).join('');
+  }
+  $('post-results').addEventListener('click',async ev=>{
+    if(state.posting)return;const button=ev.target.closest('button');if(!button)return;
+    const rows=allResults(),id=button.dataset.check||button.dataset.retry,e=rows.find(x=>x.operation?.operationId===id);
+    if(button.dataset.repost){
+      const original=state.events.find(x=>x.id===button.dataset.repost);if(!original)return;
+      if(!confirm('「'+original.title+'」を新しい操作として再投稿します。\n既存の成功・結果不明の投稿と重複する可能性があります。Discordで確認しましたか？'))return;
+      const copy={...original,id:'event-'+crypto.randomUUID(),selected:true,status:'未送信',operation:null,payload:null,result:null,error:'',safeToRetry:false,forceNewOperation:true,selectedTags:[...(original.selectedTags||[])]};
+      state.events.forEach(x=>x.selected=false);state.events.push(copy);state.reviewed=null;renderCards();renderPreview();state.reviewed=fingerprint();$('confirm-panel').classList.remove('hidden');return;
     }
+    if(!e)return;lock(true);
+    try{if(button.dataset.check)await checkOperation(e);else{await enabledSession();await checkOperation(e);if(e.safeToRetry&&!e.wait&&e.payload&&confirm('「'+e.title+'」を同じ操作キーで再開しますか？'))await send(e);}}
+    catch(error){showError(e,error);}finally{lock(false);}
+  });
+  $('parse').onclick=()=>{if(state.posting)return;for(const e of state.events)if(e.operation&&!state.history.some(h=>h.operation.operationId===e.operation.operationId))state.history.push(e);const result=runAnalysis($('source').value);state.events=result.events;state.reviewed=null;if(!state.events.length){$('input-status').textContent=result.warnings.join(' ');return;}$('results-panel').classList.remove('hidden');$('confirm-panel').classList.add('hidden');renderCards();renderResults();$('input-status').textContent=result.warnings.join(' ')||state.events.length+'件を認識しました。';};
+  function edited(ev){if(state.posting||ev.type==='input'&&!ev.target.dataset.field)return;const card=ev.target.closest('.card'),e=state.events.find(x=>x.id===card?.dataset.id);if(!e||e.operation)return;
+    if(ev.target.classList.contains('select-event'))e.selected=ev.target.checked;
+    else if(ev.target.dataset.field)e[ev.target.dataset.field]=ev.target.value;
+    else if(ev.target.dataset.tag){e.selectedTags=e.selectedTags||[];if(ev.target.checked&&e.selectedTags.length>=5&&!e.selectedTags.includes(ev.target.dataset.tag)){ev.target.checked=false;alert('タグは最大5件です');return;}e.selectedTags=ev.target.checked?[...new Set([...e.selectedTags,ev.target.dataset.tag])]:e.selectedTags.filter(x=>x!==ev.target.dataset.tag);}
+    state.reviewed=null;card.classList.toggle('selected',e.selected);$('selected-count').textContent='投稿予定 '+state.events.filter(x=>x.selected&&!x.operation).length+'件';$('review').disabled=!state.events.some(x=>x.selected&&!x.operation);
   }
-  function renderResults() {
-    const results=state.events.filter(e=>e.status!=="未送信");
-    $("result-summary").textContent=results.filter(e=>e.status==="成功").length+"/"+results.length+"件が成功しました。";
-    $("post-results").innerHTML=results.map(e=>'<div class="result '+(e.status==="成功"?"ok":"error")+'"><strong>'+escapeHtml(e.status)+'：</strong>'+escapeHtml(e.title)+(e.status==="成功"?'<br><a target="_blank" rel="noopener noreferrer" href="https://discord.com/channels/@me/'+encodeURIComponent(e.channelId)+'/'+encodeURIComponent(e.messageId)+'">投稿を開く</a>':'<br><small>'+escapeHtml(e.error||"")+'</small>')+'</div>').join("");
-    $("retry-failed").classList.toggle("hidden",!state.events.some(e=>e.status==="失敗"));
-    $("retry-failed").onclick=()=>postSelected(true);
-  }
-  $("toggle-secret").onclick=()=>{const input=$("webhook");input.type=input.type==="password"?"text":"password";$("toggle-secret").textContent=input.type==="password"?"表示":"隠す"}; $("remember").onchange=saveUrl; $("forget").onclick=()=>{localStorage.removeItem(STORE);$("webhook").value="";$("remember").checked=false}; $("parse").onclick=()=>{const result=runAnalysis($("source").value);state.events=result.events;if(!state.events.length){$("input-status").textContent=result.warnings.join(" ");return}$("results-panel").classList.remove("hidden");$("confirm-panel").classList.add("hidden");renderCards();$("input-status").textContent=result.warnings.join(" ")||`${state.events.length}件を認識しました。`}; $("cards").addEventListener("change",(ev)=>{const card=ev.target.closest(".card");if(!card)return;const e=state.events.find(x=>x.id===card.dataset.id);if(ev.target.classList.contains("select-event"))e.selected=ev.target.checked;else if(ev.target.dataset.field)e[ev.target.dataset.field]=ev.target.value;card.classList.toggle("selected",e.selected);$("selected-count").textContent=`投稿予定 ${state.events.filter(x=>x.selected).length}件`;$("review").disabled=!state.events.some(x=>x.selected)}); $("cards").addEventListener("input",(ev)=>{const card=ev.target.closest(".card"),e=state.events.find(x=>x.id===card?.dataset.id);if(!state.posting&&e&&ev.target.dataset.field)e[ev.target.dataset.field]=ev.target.value}); $("select-all").onclick=()=>{state.events.forEach(e=>e.selected=true);renderCards()};$("clear-all").onclick=()=>{state.events.forEach(e=>e.selected=false);renderCards()};$("review").onclick=()=>{renderPreview();$("confirm-panel").classList.remove("hidden");window.scrollTo({top:$('confirm-panel').offsetTop-20,behavior:"smooth"})};$("back").onclick=()=>$("confirm-panel").classList.add("hidden");$("post").onclick=postSelected;
-  $("webhook").addEventListener("input",saveUrl);
-  $("post").onclick=()=>postSelected();
-  const removeSaved=()=>{try{localStorage.removeItem(STORE);}catch{$("input-status").textContent="保存済みURLを削除できません。ブラウザのサイトデータを削除してください。";}};
-  $("forget").onclick=()=>{removeSaved();$("webhook").value="";$("remember").checked=false;};
-  try {const stored=localStorage.getItem(STORE);if(stored&&parseWebhook(stored)){$("webhook").value=stored;$("remember").checked=true;}}catch{$("input-status").textContent="端末保存を利用できません。";}
-
-  $("cards").addEventListener("click",(ev)=>{if(state.posting||!ev.target.classList.contains("auto-tag"))return;const e=state.events.find(x=>x.id===ev.target.closest(".card").dataset.id);autoTagEvent(e);renderCards()});
-  $("cards").addEventListener("change",(ev)=>{const card=ev.target.closest(".card");if(!card)return;const e=state.events.find(x=>x.id===card.dataset.id);if(ev.target.classList.contains("select-event")){e.selected=ev.target.checked;return}if(!ev.target.dataset||!ev.target.dataset.tag)return;if(state.posting)return;e.selectedTags=e.selectedTags||[];if(ev.target.checked&&e.selectedTags.length>=5){ev.target.checked=false;alert("タグは最大5件です");return;}e.selectedTags=ev.target.checked?[...new Set([...e.selectedTags,ev.target.dataset.tag])]:e.selectedTags.filter(x=>x!==ev.target.dataset.tag)});
-
-  const API="https://discord-event-poster-api.monma5435.workers.dev";
-  const SESSION="discord-event-poster.session";
-  let session=null;
-  try{session=JSON.parse(sessionStorage.getItem(SESSION)||"null");}catch{}
-  function forgetSession(){session=null;forumConfig=null;try{sessionStorage.removeItem(SESSION);}catch{}}
-  async function workerApi(path,method="GET",body){
-    if(path!=="/api/login"&&(!session||session.expiresAt<=Date.now())){forgetSession();throw new Error();}
-    const response=await fetch(API+path,{method,credentials:"omit",redirect:"error",referrerPolicy:"no-referrer",signal:AbortSignal.timeout(15000),headers:{"Content-Type":"application/json",...(session?{Authorization:"Bearer "+session.token}:{})},...(body?{body:JSON.stringify(body)}:{})});
-    if(!response.ok){if(response.status===401)forgetSession();throw new Error();}
-    return response.json();
-  }
-  async function verifyWebhookForum(url){
-    const webhookId=url.pathname.split("/").slice(-2)[0];
-    const result=await workerApi("/api/forum/webhook-check","POST",{webhookId});
-    if(!forumConfig||result.forumId!==forumConfig.forumId||result.webhookId!==webhookId)throw new Error();
-  }
-  if($("worker-login")){
-    $("worker-login").onclick=async()=>{
-      const input=$("app-password"),password=input.value;input.value="";$("worker-login").disabled=true;
-      try{forgetSession();session=await workerApi("/api/login","POST",{password});try{sessionStorage.setItem(SESSION,JSON.stringify(session));}catch{}$("auth-status").textContent="ログインしました（有効期限1時間）。";}
-      catch{$("auth-status").textContent="ログインできません。設定・パスワード・15分に5回の試行制限を確認してください。";}
-      finally{$("worker-login").disabled=false;}
-    };
-    $("worker-logout").onclick=async()=>{
-      try{await workerApi("/api/logout","POST");forgetSession();$("auth-status").textContent="ログアウトしました。";}
-      catch{$("auth-status").textContent="サーバーでの失効を確認できません。再試行してください。";}
-    };
-    $("fetch-tags").onclick=async()=>{
-      $("fetch-tags").disabled=true;forumConfig=null;
-      try{const data=await workerApi("/api/forum/tags");
-        if(!/^\d{1,20}$/.test(data.forumId)||!data.mapping||Object.entries(data.mapping).some(([name,id])=>!TAG_RULES[name]||!/^\d{1,20}$/.test(id)))throw new Error();
-        forumConfig=data;$("auth-status").textContent="タグを取得しました。"+(data.missing.length?" 未登録："+data.missing.join("・"):"")+(data.duplicates.length?" 重複："+data.duplicates.join("・"):"")+(data.unknown.length?" その他："+data.unknown.join("・"):"");
-      }catch{$("auth-status").textContent="タグを取得できません。ログインとWorker設定を確認してください。";}
-      finally{$("fetch-tags").disabled=false;}
-    };
-  }
-
-  window.EventPoster={splitEvents,extractLinks,parsePeriod,runAnalysis,autoTagEvent,appliedTagsFor,contentFor,validateEvent,parseWebhook,MAX_TAGS,TAG_RULES};
+  $('cards').addEventListener('change',edited);$('cards').addEventListener('input',edited);
+  $('cards').addEventListener('click',ev=>{if(state.posting||!ev.target.classList.contains('auto-tag'))return;const e=state.events.find(x=>x.id===ev.target.closest('.card').dataset.id);if(!e||e.operation)return;autoTagEvent(e);state.reviewed=null;renderCards();});
+  $('select-all').onclick=()=>{state.events.forEach(e=>e.selected=!e.operation);state.reviewed=null;renderCards();};
+  $('clear-all').onclick=()=>{state.events.forEach(e=>e.selected=false);state.reviewed=null;renderCards();};
+  $('review').onclick=()=>{renderPreview();state.reviewed=fingerprint();$('confirm-panel').classList.remove('hidden');window.scrollTo({top:$('confirm-panel').offsetTop-20,behavior:'smooth'});};
+  $('back').onclick=()=>$('confirm-panel').classList.add('hidden');
+  $('post').onclick=postSelected;
+  $('worker-login').onclick=async()=>{if(state.posting)return;const input=$('app-password'),password=input.value;input.value='';lock(true);try{forumConfig=null;await client.login(password);const s=await client.session();$('auth-status').textContent='ログインしました（有効期限1時間）。'+(s.capabilities?.forumPosts?'':' 本番投稿機能はまだ公開されていません。');for(const e of allResults().filter(x=>x.operation))await checkOperation(e);}catch{$('auth-status').textContent='ログインできません。設定・パスワード・試行制限・端末保存を確認してください。';}finally{lock(false);}};
+  $('worker-logout').onclick=async()=>{if(state.posting)return;lock(true);try{await client.logout();forumConfig=null;$('auth-status').textContent='ログアウトしました。操作キーはこのタブに保持し、再ログイン後に照会できます。';}catch{$('auth-status').textContent='サーバーでの失効を確認できません。再試行してください。';}finally{lock(false);}};
+  $('fetch-tags').onclick=async()=>{if(state.posting)return;lock(true);forumConfig=null;try{const r=await client.tags(),data=r.data;if(!r.ok||!window.PosterClient.snowflake(data.forumId)||!data.mapping||Object.entries(data.mapping).some(([name,id])=>!TAG_RULES[name]||!window.PosterClient.snowflake(id)))throw Object.assign(new Error(),{code:r.status===429?'DISCORD_RATE_LIMITED':'TAG_INVALID'});forumConfig=data;$('auth-status').textContent='タグを取得しました。'+(data.missing?.length?' 未登録：'+data.missing.join('・'):'')+(data.duplicates?.length?' 重複：'+data.duplicates.join('・'):'');}catch(error){$('auth-status').textContent=message(error.code);}finally{lock(false);}};
+  try{localStorage.removeItem(STORE);}catch{$('input-status').textContent='旧保存URLを削除できません。サイトデータから削除してください。新バージョンでは利用しません。';}
+  if(!client.storageReady())$('input-status').textContent='操作情報の保存を利用できません。投稿は停止します。';
+  renderResults();
+  if(state.history.length)client.session().then(async()=>{for(const e of state.history)await checkOperation(e);}).catch(()=>{});
+  window.EventPoster={splitEvents,extractLinks,parsePeriod,runAnalysis,autoTagEvent,appliedTagsFor,contentFor,validateEvent,MAX_TAGS,TAG_RULES};
 }());

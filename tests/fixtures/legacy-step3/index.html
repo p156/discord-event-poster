@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="複数のイベント情報をDiscordフォーラムへ投稿するツール">
+  <title>Discord Event Poster</title><link rel="stylesheet" href="styles.css?v=0.2.0-phase2">
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead"><div><p class="kicker">DISCORD / EVENT POSTER</p><h1>イベントを、ひとつずつ。</h1><p class="intro">貼り付けた告知文を確認しながら、Discordフォーラムへ安全に投稿します。</p></div><span class="version">v0.2.0</span></header>
+    <section class="panel setup" aria-labelledby="setup-title"><div class="section-heading"><span class="step">01</span><div><h2 id="setup-title">接続先と入力</h2><p>Webhook URLはこのブラウザからDiscordへ直接送信されます。</p></div></div>
+      <label for="webhook">Webhook URL</label><div class="secret-field"><input id="webhook" type="password" autocomplete="off" spellcheck="false" placeholder="https://discord.com/api/webhooks/..." aria-describedby="webhook-note"><button id="toggle-secret" type="button" class="icon-button" aria-label="Webhook URLを表示">表示</button></div>
+      <div class="settings-row"><label class="check"><input id="remember" type="checkbox"> この端末に保存する</label><button id="forget" class="link-button" type="button">保存済みURLを削除</button></div><p id="webhook-note" class="hint">初期状態は保存しません。共有端末では保存しないでください。</p>
+      <fieldset><legend>フォーラムタグ取得</legend><label for="app-password">アプリ用パスワード</label><input id="app-password" type="password" autocomplete="current-password"><div class="actions"><button id="worker-login" type="button" class="small-button">ログイン</button><button id="worker-logout" type="button" class="small-button">ログアウト</button><button id="fetch-tags" type="button" class="small-button">タグ一覧を取得</button></div><p id="auth-status" class="hint" role="status">タグなしのWebhook投稿はログインせず利用できます。</p></fieldset>
+      <label for="source">イベント告知文</label><textarea id="source" rows="9" placeholder="【東京】『イベントタイトル』\n10/23〜1/17\n説明文\nhttps://example.com\n#タグ"></textarea>
+      <div class="actions"><button id="parse" class="primary" type="button">解析する</button><span id="input-status" class="hint" role="status"></span></div>
+    </section>
+    <section id="results-panel" class="panel hidden" aria-labelledby="results-title"><div class="section-heading"><span class="step">02</span><div><h2 id="results-title">抽出結果を確認</h2><p>推定や警告がある項目はカード上で編集できます。</p></div></div><div class="toolbar"><span id="count">0件</span><div><button id="select-all" class="small-button" type="button">全選択</button><button id="clear-all" class="small-button" type="button">全解除</button></div></div><div id="cards" class="cards"></div><div class="post-bar"><span id="selected-count">投稿予定 0件</span><button id="review" class="primary" type="button" disabled>投稿内容を確認</button></div></section>
+    <section id="confirm-panel" class="panel hidden" aria-labelledby="confirm-title"><div class="section-heading"><span class="step">03</span><div><h2 id="confirm-title">投稿前の最終確認</h2><p>この操作で、選択したイベントごとに1スレッド作成します。</p></div></div><div id="preview" class="preview"></div><div class="post-bar"><button id="back" class="small-button" type="button">編集へ戻る</button><button id="post" class="primary" type="button">Discordへ投稿する</button></div></section>
+    <section id="status-panel" class="panel hidden" aria-labelledby="status-title"><div class="section-heading"><span class="step">04</span><div><h2 id="status-title">投稿結果</h2><p id="result-summary"></p></div></div><div id="post-results" class="post-results"></div><button id="retry-failed" class="small-button hidden" type="button">失敗したものを再送信</button></section>
+    <footer><p>Webhook URLは認証情報です。ログ・解析サービス・URLクエリには送信しません。</p><a href="https://github.com/p156/discord-event-poster" target="_blank" rel="noopener noreferrer">GitHub</a></footer>
+  </main><script src="app.js?v=0.2.0-phase2"></script>
+</body></html>

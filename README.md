@@ -1,40 +1,68 @@
 # Discord Event Poster
 
-GitHub Pagesで動作する、複数イベントのDiscordフォーラム投稿ツールです。
+複数の告知文を解析し、確認したイベントをDiscordフォーラムへ投稿するツールです。
+Phase 3 Step 4ではBot API投稿をローカルのモック環境へ統合しました。
+本番Workerの投稿APIは未公開で、今回の作業ではデプロイしていません。
 
-## 使い方
+## 操作の流れ
 
-1. DiscordフォーラムのWebhook URLを入力する。
-2. Xなどからコピーした告知文を貼り付けて「解析する」を押す。
-3. 抽出結果を編集し、投稿対象を選ぶ。
-4. 投稿内容を確認してからDiscordへ投稿する。
+1. 告知文を貼り付けて「解析する」を押します。
+2. 抽出結果を編集し、対象イベントを選んでプレビューします。
+3. 投稿時にログインし、必要な場合はフォーラムタグを取得します。
+4. 確認後、イベントごとに操作キーを発行して順次投稿します。
+5. 成功時はDiscordリンクを表示します。
 
-Webhook URLはユーザーが選択した場合だけ、この端末のlocalStorageに保存します。localStorageは暗号化された秘密情報保管庫ではありません。共有端末では保存しないでください。入力文章と抽出結果はページを閉じると消えます。
+解析とプレビューにはログイン不要です。
+本番の投稿機能が無効な場合は投稿を停止し、Webhookへ切り替えません。
+ブラウザへBot Tokenを渡すこともありません。
 
-## 開発
+## 結果の確認と再投稿
 
-Phase 3 Step 1はBot API方式で契約を確定しました。[設計概要](worker/docs/phase3/DESIGN.md)、[投稿API契約](worker/docs/phase3/API-CONTRACT.md)、[段階的実装計画](worker/docs/phase3/IMPLEMENTATION-PLAN.md) を参照してください。既存Bot Secret・固定forum、投稿時認証、全利用者10件/分、30日履歴、期限付き操作キー、結果不明の自動再送禁止を定義しています。これは設計の確定であり、現行のWebhook直送からの移行実装はまだ始めていません。
+通信障害時は同じ操作IDで状態を照会します。
+成功、送信中、結果不明の操作は通常の投稿ボタンで再送しません。
+安全に再試行できる操作だけ、状態を確認して同じキーで再開できます。
+別の操作として投稿する場合は、対象イベントの「新しい操作として再投稿」で重複の可能性を確認します。
+本文が異なる操作へのキー流用は拒否します。
 
-v0.2.0 Phase 2は既存Workerによる個人用認証とフォーラムタグ取得を追加します。ログイン→タグ一覧取得後、イベントに最大5タグを選択できます。タグ付き投稿前にWebhookが取得元フォーラムに属するか照合します。タグなし投稿はWorkerが利用できなくても従来どおり使えます。自動判定は編集済みタイトル・説明を対象にボタン押下時だけ実行します。Phase 1のイベント5件打ち切りは仕様との不一致のため撤去し、最大5タグ制限に修正しました。
+操作キー、本文ハッシュ、期限、状態はこのタブのsessionStorageに保持します。
+本文、イベント名、Bot Tokenは操作履歴へ保存しません。
+有効期限はサーバー発行から30日です。
+期限切れ情報は次の読込時に除去し、タブを閉じた場合もブラウザのsessionStorageの仕様に従って失われます。
+ブラウザのセッション復元で残る場合があるため、共有端末ではサイトデータを削除してください。
+最大200操作とし、保存不可や上限時は新規投稿を停止します。
+ログアウトでは操作キーを消さず、再ログイン後に照会できます。
+リロード後の本文復元は対象外ですが、同じ本文を再解析した場合は保持済みハッシュとの一致で同じ操作を確認します。
 
-Workerの追加設定と本番デプロイ手順、API、料金比較、残作業は `worker/DEPLOYMENT.md` を参照してください。今回は本番Workerを変更していません。
+旧Webhook入力欄と直接送信処理は撤去しました。
+旧localStorageの`discord-event-poster.webhook`だけを削除し、他の保存データには触れません。
+Discord上のWebhook自体は削除していません。
 
-本番のWeb Crypto PBKDF2上限に対する修正・既存Secret互換性・再デプロイ手順は `worker/AUTH-PBKDF2-FIX.md` を参照してください。Workerは固定依存のPBKDF2実装をバンドルし、600,000回の既存ハッシュを維持します。ブラウザ側のランタイム依存は追加していません。
+## 開発と検証
 
-外部ランタイム依存なしのVanilla JavaScriptです。GitHub Pagesではリポジトリの Settings → Pages で `main` / root を選択してください。Project Siteの相対URLで動作します。
+`npm ci`の後、次を実行します。
+ブラウザ試験はWindowsのMicrosoft Edgeを使用します。
 
-## 検証
+```text
+npm test
+npm run test:browser
+npm run test:post-runtime
+npm run test:worker-runtime
+npm run test:legacy-browser
+npm run test:phase2-browser
+```
 
-`node --check app.js`、`node tests-v010.js`、`node --test tests-acceptance.cjs` で検証します。受入試験は架空のWebhookを使う通信モックであり、Discordへ送信しません。
+新ブラウザ試験は正式WorkerルーターとローカルSQLite Durable Objectを通し、Discord通信だけをモックします。
+旧Webhook試験は`tests/fixtures/legacy-step3/`の固定した過去実装を検証する履歴テストです。
+現行フロントエンドの検証とは区別しています。
+試験コード、依存、スクリーンショットはGitHub Pages公開対象外です。
+公開ファイルの一致確認用`tests/pages-verify.cjs`は、本番への配信確認時に別途実行します。
 
-ブラウザ受入試験は `npm ci` の後に `npm run test:browser` で実行します。開発用PlaywrightとWindowsのMicrosoft Edgeを使用し、全リクエストをテスト側で制御します。実Discordへの通信はありません。30秒タイムアウトと429待機はブラウザの仮想時計で検証します。結果とスクリーンショットはGit対象外の `work/browser-acceptance/` に出力します。GitHub Pagesの `_config.yml` でテストコードと開発依存を公開対象から除外しています。
+## 投稿APIの有効化境界
 
-最終公開確認は `node tests/pages-verify.cjs` です。公開HTML/CSS/JSの一致、開発ファイルの非公開、PC/390px/320pxの表示、JavaScript読込とエラーなしを確認し、投稿は実行しません。
+Workerのサーバー設定`FORUM_POSTS_ENABLED`が文字列`true`の場合だけ投稿APIを有効化します。
+未設定、false、リクエストヘッダー、URLパラメーターでは有効になりません。
+ローカル試験ではMiniflareのテスト用bindingで設定し、既存Wrangler設定は変更しません。
+本番で設定する作業はStep 5の検証とユーザー承認後に限ります。
+既存Secretの再生成や認証の無効化は不要です。
 
-通信の制限時間は30秒です。HTTP 429はRetry-AfterヘッダーとJSONのretry_afterの長い方を待ち、最大3回まで再試行します。待機が60秒を超える場合や繰り返す場合は失敗として手動再送信に戻します。HTTP 5xx・ネットワーク/CORS障害・タイムアウト・投稿IDを確認できない成功応答は「結果不明」です。結果不明と成功済みイベントは再送信対象から除外します。Discord側で投稿状況を確認してください。
-
-保存ONの入力変更は保存値へ反映し、OFFへの切替は保存値を削除します。WebhookはHTTPSのDiscord公式ホストのみ許可し、認証情報・ポート・クエリ・フラグメント付きのURLを拒否します。APIや通信例外の生メッセージを画面に出さず、秘密URLの漏洩を防ぎます。ただしブラウザ自身の開発者ツールのNetwork欄にPOST先が現れることは防げません。
-
-## 制約
-
-DiscordのWebhook URLをブラウザに入力する方式のため、URLを知る人は投稿できます。公開リポジトリにはURLを含めないでください。初期版は本文2000文字、スレッド名100文字の範囲を送信前に検証します。解析はルールベースで、認識できない文は警告します。投稿結果が不明な場合は自動再送信しません。
+詳細は[Step 4の記録](worker/docs/phase3/STEP4-RESULTS.md)、[API契約](worker/docs/phase3/API-CONTRACT.md)、[実装計画](worker/docs/phase3/IMPLEMENTATION-PLAN.md)を参照してください。

@@ -1,5 +1,9 @@
 # Phase 3 実装計画 — Step 1確定、Bot API方式
 
+Step 4 status: [STEP4-RESULTS.md](STEP4-RESULTS.md). Local frontend/formal-router
+integration is complete behind a default-off server gate. Step 5 and production
+activation remain pending a subsequent user instruction.
+
 Step 3 scope update: [STEP3-RESULTS.md](STEP3-RESULTS.md). Contrary to the original
 future-publication plan below, the current Step 3 instruction requires internal
 integration only. Public activation/capabilities and frontend work remain deferred.

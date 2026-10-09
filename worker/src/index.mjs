@@ -5,6 +5,10 @@ import { fetchLegacyForum } from './discord-client.mjs';
 import { forumTagMapping } from './forum-tags.mjs';
 import { postState,cleanupPosts,scheduleEarlier } from './post-state.mjs';
 import { verifyInternal,OperationError } from './post-keys.mjs';
+import {createPostHandler} from './post-handler.mjs';
+import {cooldownState} from './discord-cooldown-state.mjs';
+import {createDiscordFetch} from './discord-cooldown.mjs';
+import {discordRateInfo,DiscordTransportError} from './discord-client.mjs';
 
 const enc = new TextEncoder();
 const hex = bytes => Array.from(new Uint8Array(bytes), x=>x.toString(16).padStart(2,'0')).join('');
@@ -48,10 +52,10 @@ export class AuthState {
     }
     const verified=await verifyToken(token||'',this.env.SESSION_SIGNING_KEY);
     if(!verified||!sessions.some(s=>s.id===verified.id&&s.expires===verified.expires))return json({error:'ログインし直してください。'},401);
-    if(typeof action==='string'&&action.startsWith('post.')){
+    if(typeof action==='string'&&(action.startsWith('post.')||action.startsWith('discord.'))){
       const {proof,...body}=packet;
       if(request.url!=='https://internal/auth'||request.method!=='POST'||!await verifyInternal(body,proof,this.env.SESSION_SIGNING_KEY))return json({error:{code:'INTERNAL_ACCESS_REJECTED'}},403);
-      try{return json(await postState(this.storage,this.env,body,now));}
+      try{return json(action.startsWith('post.')?await postState(this.storage,this.env,body,now):await cooldownState(this.storage,body,now));}
       catch(error){return json({error:{code:error instanceof OperationError?error.code:'STATE_UNAVAILABLE'}},error instanceof OperationError?error.httpStatus:503);}
     }
     if(action==='logout')await this.storage.put('sessions',sessions.filter(s=>s.id!==verified.id));
@@ -79,11 +83,15 @@ export default {
     if(!hasAllowedHost(request))return json({error:'アクセスできません。'},403);
     const origin=request.headers.get('Origin');
     if(!origin||origin!==env.ALLOWED_ORIGIN)return json({error:'アクセスできません。'},403);
-    const headers={'Access-Control-Allow-Origin':origin,'Vary':'Origin','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'};
+    const headers={'Access-Control-Allow-Origin':origin,'Access-Control-Expose-Headers':'Retry-After,Location','Vary':'Origin','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'};
     let response,stage='request';
     try {
       const url=new URL(request.url),path=url.pathname;
-      if(url.search)response=json({error:'パラメーターは利用できません。'},400);
+      if(path==='/api/forum/posts'||path==='/api/forum/post-intents'||path.startsWith('/api/forum/posts/')){
+        if(env.FORUM_POSTS_ENABLED!=='true')response=json({error:'APIが見つかりません。'},404);
+        else return createPostHandler()(request,env);
+      }
+      else if(url.search)response=json({error:'パラメーターは利用できません。'},400);
       else if(request.method==='OPTIONS') {
         const method=request.headers.get('Access-Control-Request-Method');
         const requested=(request.headers.get('Access-Control-Request-Headers')||'').toLowerCase().split(',').map(x=>x.trim()).filter(Boolean);
@@ -98,11 +106,13 @@ export default {
         const token=request.headers.get('Authorization')?.match(/^Bearer ([a-f0-9.]{1,160})$/)?.[1]||'';
         stage='auth_check';
         response=await auth(env,{action:path==='/api/logout'?'logout':'check',token});
+        if(response.ok&&path==='/api/session')response=json({authenticated:true,capabilities:{forumPosts:env.FORUM_POSTS_ENABLED==='true',apiVersion:1,operationTicket:'v1'}});
         if(response.ok&&path==='/api/forum/tags') {
           stage='discord_fetch';
-          const discordResponse=await fetchLegacyForum(env);
+          const discordResponse=await fetchLegacyForum(env,false,createDiscordFetch(env,token));
           stage='discord_response';
           if(discordResponse.status>=300&&discordResponse.status<400){diagnostic(stage,null,discordResponse.status);response=json({error:'Discordフォーラムを取得できませんでした。'},502);}
+          else if(discordResponse.status===429){diagnostic(stage,null,429);const rate=await discordRateInfo(discordResponse,env.DISCORD_BOT_TOKEN);response=json({error:{code:'DISCORD_RATE_LIMITED'},retryAfterSeconds:rate.retryAfterSeconds},429);response.headers.set('Retry-After',String(Math.ceil(rate.retryAfterSeconds)));}
           else if(!discordResponse.ok){diagnostic(stage,null,discordResponse.status);response=json({error:'Discordフォーラムを取得できませんでした。'},502);}
           else {
             stage='discord_json_parse';
@@ -120,9 +130,10 @@ export default {
           else {
             // Only list webhooks belonging to the fixed forum; never proxy arbitrary API routes.
             stage='discord_fetch';
-            const discordResponse=await fetchLegacyForum(env,true);
+            const discordResponse=await fetchLegacyForum(env,true,createDiscordFetch(env,token));
             stage='discord_response';
             if(discordResponse.status>=300&&discordResponse.status<400){diagnostic(stage,null,discordResponse.status);response=json({error:'Webhookの所属確認に失敗しました。'},502);}
+            else if(discordResponse.status===429){diagnostic(stage,null,429);const rate=await discordRateInfo(discordResponse,env.DISCORD_BOT_TOKEN);response=json({error:{code:'DISCORD_RATE_LIMITED'},retryAfterSeconds:rate.retryAfterSeconds},429);response.headers.set('Retry-After',String(Math.ceil(rate.retryAfterSeconds)));}
             else if(!discordResponse.ok){diagnostic(stage,null,discordResponse.status);response=json({error:'Webhookの所属確認に失敗しました。'},502);}
             else {
               stage='discord_json_parse';
@@ -132,7 +143,7 @@ export default {
           }
         }
       } else response=json({error:'APIが見つかりません。'},404);
-    } catch(error) { diagnostic(stage,error);response=json({error:'処理を完了できませんでした。'},503); }
+    } catch(error) { if(error instanceof DiscordTransportError&&error.status===429){response=json({error:{code:'DISCORD_RATE_LIMITED'},retryAfterSeconds:error.rate.retryAfterSeconds},429);response.headers.set('Retry-After',String(Math.ceil(error.rate.retryAfterSeconds)));}else{diagnostic(stage,error);response=json({error:'処理を完了できませんでした。'},503);} }
     const result=new Response(response.body,response);for(const [key,value]of Object.entries(headers))result.headers.set(key,value);return result;
   }
 };

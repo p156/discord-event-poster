@@ -1,5 +1,9 @@
 # Phase 3 Step 1 — Bot API方式・契約確定
 
+Step 4 status: [STEP4-RESULTS.md](STEP4-RESULTS.md). Bot frontend integration
+is implemented locally with mocked Discord; formal posting routes remain disabled
+unless enabled by server configuration. Earlier phase-status descriptions are historical.
+
 Step 3 scope update: see [STEP3-RESULTS.md](STEP3-RESULTS.md). The current user
 instruction supersedes earlier Step 3 public-activation statements: posting
 handlers remain internal and disconnected; no capability/public write is enabled.

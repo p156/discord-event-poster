@@ -1,132 +1,58 @@
-// Browser-only transport mocks. No test hook is added to the production app.
-const {chromium}=require('playwright');
-const assert=require('node:assert/strict');
-const fs=require('node:fs/promises');
-const path=require('node:path');
-const root=path.resolve(__dirname,'..');
-const output=path.join(root,'work','browser-acceptance');
-const url='http://poster.test/discord-event-poster/';
-const token='FAKE_BROWSER_TEST_ONLY';
-const webhook='https://discord.com/api/webhooks/123456789/'+token;
-const results=[];
-let browser;
-async function setup(steps, width=1280) {
-  const context=await browser.newContext({viewport:{width,height:900},serviceWorkers:'block'});
-  const blocked=[],consoleLogs=[],errors=[];
-  await context.route('**/*',async route=>{
-    const u=new URL(route.request().url());
-    const name=u.pathname.split('/').pop()||'index.html';
-    if(u.origin==='http://poster.test'&&['index.html','styles.css','app.js'].includes(name)){
-      await route.fulfill({status:200,contentType:name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html',body:await fs.readFile(path.join(root,name))});
-    }else{blocked.push(u.origin);await route.abort();}
-  });
-  await context.addInitScript(({steps,token})=>{
-    window.__calls=[];
-    window.__steps=steps;
-    window.fetch=async(input,options)=>{
-      window.__calls.push({url:String(input),method:options.method,body:JSON.parse(options.body),time:Date.now()});
-      const step=window.__steps.shift()||{status:200};
-      if(step.pending)return new Promise(()=>{});
-      if(step.network)throw new TypeError('mock network failure '+token);
-      return new Response(JSON.stringify(step.status===200?{id:String(100+window.__calls.length),channel_id:'789'}:step.body||{message:token}),{status:step.status,headers:{'Content-Type':'application/json',...step.headers}});
-    };
-  },{steps,token});
-  const page=await context.newPage();
-  page.on('console',msg=>consoleLogs.push({type:msg.type(),text:msg.text(),location:msg.location()}));
-  page.on('pageerror',e=>errors.push(e.message));
-  page.on('dialog',async d=>d.type()==='confirm'?d.accept():d.dismiss());
-  await page.clock.install({time:new Date('2026-10-09T09:00:00+09:00')});
-  await page.goto(url);
-  await page.clock.pauseAt(new Date('2026-10-09T09:00:01+09:00'));
-  await page.getByLabel('Webhook URL',{exact:true}).fill(webhook);
-  async function prepare(count=1){
-    await page.getByLabel('イベント告知文').fill(Array.from({length:count},(_,i)=>`【東京】『ブラウザ試験${i+1}』説明`).join('\n'));
-    await page.getByRole('button',{name:'解析する',exact:true}).click();
-    await page.getByRole('button',{name:'投稿内容を確認',exact:true}).click();
-  }
-  const status=()=>page.locator('#post-results').innerText();
-  async function ready(){await page.waitForFunction(()=>!document.getElementById('post').disabled);}
-  async function verify(){
-    assert.equal(blocked.length,0,'unexpected external request');
-    assert.equal(errors.length,0,'browser JavaScript errors');
-    assert.ok(!JSON.stringify(consoleLogs).includes(token),'console credential exposure');
-    assert.ok(!(await page.locator('body').innerText()).includes(token),'visible UI credential exposure');
-    assert.ok(await page.getByRole('button',{name:'解析する',exact:true}).isEnabled(),'parser locked after error');
-    const calls=await page.evaluate(()=>window.__calls);
-    for(const c of calls){assert.equal(c.method,'POST');assert.deepEqual(c.body.allowed_mentions,{parse:[]});assert.ok(c.url.endsWith('?wait=true'));}
-    return calls;
-  }
-  return {context,page,prepare,status,ready,verify};
+// Browser -> formal Worker router -> real local SQLite DO -> mocked Discord.
+const {chromium}=require('playwright'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path');
+const {pbkdf2Sync}=require('node:crypto');
+const root=path.resolve(__dirname,'..'),api='https://discord-event-poster-api.monma5435.workers.dev',origin='https://poster.test';
+let browser,bundle,Miniflare,convertV4MiniflareOptions;let passed=0;
+async function setup({enabled=true,mode=null,drop=false,storageFail=false,width=390}={}){
+ const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:bundle,compatibilityDate:'2026-04-01',durableObjects:{AUTH_STATE:{className:'AuthState',useSQLite:true}},bindings:{...(enabled?{FORUM_POSTS_ENABLED:'true'}:{}),ALLOWED_ORIGIN:origin,DISCORD_BOT_TOKEN:'PRIVATE_TEST_BOT',DISCORD_FORUM_CHANNEL_ID:'123',SESSION_SIGNING_KEY:'a'.repeat(64),APP_PASSWORD_HASH:'pbkdf2-sha256$600000$'+'ab'.repeat(16)+'$'+pbkdf2Sync('TEST_ONLY_PASSWORD',Buffer.from('ab'.repeat(16),'hex'),600000,32,'sha256').toString('hex')}}));
+ const context=await browser.newContext({viewport:{width,height:900},serviceWorkers:'block'}),calls=[],external=[],errors=[],logs=[];
+ const h={mf,context,calls,external,mode,drop,hold:false,release:null};
+ await context.route('**/*',async route=>{
+   const request=route.request(),u=new URL(request.url()),name=u.pathname.split('/').pop()||'index.html';
+   if(u.origin===origin&&['index.html','styles.css','app.js','poster-client.js'].includes(name))return route.fulfill({contentType:name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html',body:await fs.readFile(path.join(root,name))});
+   if(u.origin!==api){external.push(u.origin);return route.abort();}
+   calls.push({path:u.pathname,method:request.method(),payload:request.postData()?JSON.parse(request.postData()):null});
+   const headers=new Headers(request.headers());headers.set('Origin',origin);
+   if(u.pathname==='/api/forum/posts'&&request.method()==='POST'&&h.mode)headers.set('X-Test-Mode',h.mode);
+   const response=await mf.dispatchFetch(u.href,{method:request.method(),headers,...(request.postData()?{body:request.postData()}:{})});
+   const body=Buffer.from(await response.arrayBuffer());
+   if(u.pathname==='/api/forum/posts'&&request.method()==='POST'){
+     if(h.hold)await new Promise(resolve=>{h.release=resolve;});
+     if(h.drop){h.drop=false;return route.abort();}
+   }
+   return route.fulfill({status:response.status,headers:Object.fromEntries(response.headers),body});
+ });
+ if(storageFail)await context.addInitScript(()=>{const set=Storage.prototype.setItem;Storage.prototype.setItem=function(k,v){if(k==='discord-event-poster.operations.v1')throw new DOMException('Storage disabled','QuotaExceededError');return set.call(this,k,v);};});
+ await context.addInitScript(()=>{localStorage.setItem('discord-event-poster.webhook','PRIVATE_OLD_URL');localStorage.setItem('other-data','keep');});
+ const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>logs.push(m.text()));
+ h.acceptRepost=true;page.on('dialog',d=>d.type()==='confirm'?(d.message().includes('新しい操作')&&!h.acceptRepost?d.dismiss():d.accept()):d.dismiss());
+ await page.goto(origin+'/');
+ h.page=page;h.prepare=async(count=1)=>{await page.locator('#source').fill(Array.from({length:count},(_,i)=>'【東京】『試験'+i+'』PRIVATE_EVENT_DESCRIPTION').join('\n'));await page.locator('#parse').click();await page.locator('#review').click();};
+ h.login=async()=>{await page.locator('#app-password').fill('TEST_ONLY_PASSWORD');await page.locator('#worker-login').click();await page.waitForFunction(()=>!document.getElementById('worker-login').disabled);assert.match(await page.locator('#auth-status').innerText(),/ログインしました/);};
+ h.post=async()=>{await page.locator('#post').click();await page.waitForFunction(()=>!document.getElementById('post').disabled);};
+ h.posts=()=>calls.filter(c=>c.path==='/api/forum/posts'&&c.method==='POST');h.intents=()=>calls.filter(c=>c.path==='/api/forum/post-intents'&&c.method==='POST');
+ h.verify=async()=>{assert.equal(external.length,0);assert.equal(errors.length,0);assert.ok(!logs.join(' ').includes('PRIVATE_TEST_BOT'));assert.ok(!(await page.locator('body').innerText()).includes('TEST_ONLY_PASSWORD'));assert.equal(await page.locator('#webhook').count(),0);const storage=await page.evaluate(()=>({old:localStorage.getItem('discord-event-poster.webhook'),other:localStorage.getItem('other-data'),ops:sessionStorage.getItem('discord-event-poster.operations.v1')}));assert.equal(storage.old,null);assert.equal(storage.other,'keep');assert.ok(!String(storage.ops).includes('PRIVATE_EVENT_DESCRIPTION'));assert.ok(!String(storage.ops).includes('PRIVATE_TEST_BOT'));};
+ h.close=async()=>{h.release?.();await context.close();await mf.dispose();};return h;
 }
-async function check(name,fn){try{await fn();results.push({name,status:'PASS'});console.log('PASS '+name);}catch(e){results.push({name,status:'FAIL',error:e.message});console.error('FAIL '+name+': '+e.message);}}
+async function check(name,run){const h=await setup(run.options);try{await run(h);await h.verify();passed++;console.log('PASS '+name);}finally{await h.close();}}
 async function main(){
-  await fs.mkdir(output,{recursive:true});
-  browser=await chromium.launch({channel:'msedge',headless:true});
-  for(const code of [400,401,403,404,500,502,503])await check('HTTP '+code,async()=>{
-    const h=await setup([{status:code}]);
-    try{
-      await h.prepare();await h.page.locator('#post').click();await h.ready();
-      const text=await h.status();assert.match(text,new RegExp('HTTP '+code));assert.match(text,code>=500?/結果不明/:/失敗/);assert.match(text,/[ぁ-んァ-ン]/);
-      const explanation={400:/不正なリクエスト/,401:/認証に失敗/,403:/権限がありません/,404:/Webhookが見つかりません/};
-      if(explanation[code])assert.match(text,explanation[code]);
-      assert.equal(await h.page.locator('#retry-failed').isVisible(),code<500);
-      assert.match(await h.page.locator('.card').innerText(),code>=500?/状態：結果不明/:/状態：失敗/);
-      assert.equal(await h.page.locator('#review').isEnabled(),false);
-      await h.page.locator('#post').click();await h.ready();
-      assert.equal((await h.verify()).length,1,'completed event unexpectedly resent');
-      await h.page.screenshot({path:path.join(output,'http-'+code+'.png'),fullPage:true});
-    }finally{await h.context.close();}
-  });
-  await check('network error: unknown, no retry',async()=>{
-    const h=await setup([{network:true}]);try{await h.prepare();await h.page.locator('#post').click();await h.ready();assert.match(await h.status(),/結果不明/);assert.match(await h.status(),/ネットワーク/);await h.page.locator('#post').click();assert.equal((await h.verify()).length,1);assert.equal(await h.page.locator('#retry-failed').isVisible(),false);}finally{await h.context.close();}
-  });
-  await check('timeout + double execution lock + unknown',async()=>{
-    const h=await setup([{pending:true}]);try{
-      await h.prepare();await h.page.locator('#post').click();
-      await h.page.waitForFunction(()=>window.__calls.length===1);
-      assert.equal(await h.page.locator('#post').isEnabled(),false);assert.equal(await h.page.locator('#parse').isEnabled(),false);
-      assert.equal(await h.page.locator('#review').isEnabled(),false,'review must stay disabled while posting');
-      assert.equal(await h.page.locator('.select-event').isEnabled(),false,'selection must be frozen while posting');
-      assert.equal(await h.page.getByLabel('タイトル',{exact:true}).isEnabled(),false,'editor must be frozen while posting');
-      assert.match(await h.status(),/送信中/);
-      await h.page.evaluate(()=>{document.getElementById('post').click();});
-      assert.equal((await h.page.evaluate(()=>window.__calls)).length,1);
-      await h.page.clock.runFor(29999);assert.match(await h.status(),/送信中/);
-      await h.page.clock.runFor(1);await h.ready();assert.match(await h.status(),/結果不明/);assert.match(await h.status(),/タイムアウト/);
-      await h.page.locator('#post').click();assert.equal((await h.verify()).length,1);
-      await h.page.screenshot({path:path.join(output,'timeout.png'),fullPage:true});
-    }finally{await h.context.close();}
-  });
-  await check('429 waiting + Retry-After + retry success',async()=>{
-    const h=await setup([{status:429,body:{retry_after:1},headers:{'Retry-After':'2'}},{status:200}]);try{
-      await h.prepare();await h.page.locator('#post').click();
-      await h.page.waitForFunction(()=>document.getElementById('result-summary').textContent.includes('2秒待機'));
-      assert.equal(await h.page.locator('#post').isEnabled(),false);
-      await h.page.clock.runFor(1999);assert.equal((await h.page.evaluate(()=>window.__calls)).length,1);
-      await h.page.clock.runFor(1);await h.ready();assert.match(await h.status(),/成功/);
-      const calls=await h.verify();assert.equal(calls.length,2);assert.equal(calls[1].time-calls[0].time,2000);
-    }finally{await h.context.close();}
-  });
-  await check('partial failure + failure-only retry + success never resent',async()=>{
-    const h=await setup([{status:200},{status:400},{status:200}],390);try{
-      await h.prepare(2);await h.page.locator('#post').click();await h.ready();
-      assert.equal(await h.page.locator('#post-results .result.ok').count(),1);assert.equal(await h.page.locator('#post-results .result.error').count(),1);
-      assert.equal(await h.page.locator('#retry-failed').isVisible(),true);
-      await h.page.screenshot({path:path.join(output,'partial-failure-390.png'),fullPage:true});
-      await h.page.locator('#status-panel').screenshot({path:path.join(output,'partial-failure-results.png')});
-      await h.page.locator('#retry-failed').click();await h.ready();
-      assert.equal(await h.page.locator('#post-results .result.ok').count(),2);assert.equal(await h.page.locator('#retry-failed').isVisible(),false);
-      await h.page.locator('#select-all').click();await h.page.locator('#post').click();
-      const calls=await h.verify();assert.equal(calls.length,3);assert.equal(calls[2].body.thread_name,'【東京】ブラウザ試験2');
-      assert.equal(await h.page.locator('#post-results a').count(),2);
-    }finally{await h.context.close();}
-  });
-  for(const width of [1280,390,320])await check('layout '+width,async()=>{
-    const h=await setup([{status:400}],width);try{await h.prepare();await h.page.locator('#post').click();await h.ready();const dims=await h.page.evaluate(()=>({width:innerWidth,scroll:document.documentElement.scrollWidth}));assert.ok(dims.scroll<=dims.width);await h.verify();}finally{await h.context.close();}
-  });
-  await browser.close();
-  await fs.writeFile(path.join(output,'results.json'),JSON.stringify({timestamp:new Date().toISOString(),environment:{browser:'Microsoft Edge (headless)',playwright:require('playwright/package.json').version,transport:'browser fetch mock; all requests intercepted; no external continue',clock:'Playwright Clock 30000ms virtual timeout'},results},null,2));
-  console.log(JSON.stringify({tests:results.length,pass:results.filter(x=>x.status==='PASS').length,fail:results.filter(x=>x.status==='FAIL').length}));
-  if(results.some(x=>x.status==='FAIL'))process.exitCode=1;
+ ({Miniflare,convertV4MiniflareOptions}=await import('miniflare'));const {build}=await import('esbuild');const {installProductionPbkdf2Limit}=await import('../worker/tests/production-crypto.mjs');
+ const built=await build({entryPoints:[path.join(root,'worker/tests/post-runtime-entry.mjs')],bundle:true,write:false,format:'esm',platform:'browser',target:'es2022'});bundle='('+installProductionPbkdf2Limit.toString()+')();\n'+built.outputFiles[0].text;
+ browser=await chromium.launch({channel:'msedge',headless:true});
+ await check('unauthenticated analysis/preview; login required for even tagless posts',async h=>{await h.prepare();assert.match(await h.page.locator('#preview').innerText(),/試験0/);await h.post();assert.equal(h.intents().length,0);assert.match(await h.page.locator('#auth-status').innerText(),/ログイン/);});
+ const disabled=async h=>{await h.prepare();await h.login();await h.post();assert.equal(h.intents().length,0);assert.match(await h.page.locator('#auth-status').innerText(),/まだ公開/);};disabled.options={enabled:false};await check('production-equivalent gate stays disabled',disabled);
+ await check('login, successful Bot flow, immutable preview and trusted Discord links',async h=>{await h.prepare();await h.login();await h.post();assert.equal(h.posts().length,1);assert.equal(h.intents().length,1);assert.match(await h.page.locator('#post-results').innerText(),/成功/);assert.equal(await h.page.locator('#post-results a').getAttribute('href'),'https://discord.com/channels/456/790/791');assert.deepEqual(h.posts()[0].payload,h.intents()[0].payload);await h.post();assert.equal(h.posts().length,1);});
+ await check('multiple events execute sequentially; successes never repeat',async h=>{await h.prepare(3);await h.login();await h.post();assert.equal(h.posts().length,3);assert.equal(await h.page.locator('.result.ok').count(),3);const paths=h.calls.filter(c=>c.method==='POST'&&c.path.startsWith('/api/forum/post')).map(c=>c.path);assert.deepEqual(paths,Array.from({length:3},()=>['/api/forum/post-intents','/api/forum/posts']).flat());await h.page.locator('#select-all').click();await h.post();assert.equal(h.posts().length,3);});
+ await check('double click and editors locked during request; no duplicate POST',async h=>{await h.prepare();await h.login();h.hold=true;await h.page.locator('#post').click();await h.page.waitForFunction(()=>document.getElementById('post').disabled);while(!h.release)await new Promise(r=>setTimeout(r,10));assert.equal(await h.page.locator('#parse').isEnabled(),false);assert.equal(await h.page.locator('[data-field="title"]').isEnabled(),false);await h.page.evaluate(()=>document.getElementById('post').onclick());assert.equal(h.posts().length,1);h.hold=false;h.release();await h.page.waitForFunction(()=>!document.getElementById('post').disabled);});
+ const unknown=async h=>{await h.prepare();await h.login();await h.post();assert.match(await h.page.locator('#post-results').innerText(),/結果不明/);await h.post();assert.equal(h.posts().length,1);await h.page.locator('[data-check]').click();await h.page.waitForFunction(()=>!document.getElementById('post').disabled);assert.equal(h.posts().length,1);h.acceptRepost=false;await h.page.locator('[data-repost]').click();assert.equal(h.intents().length,1);h.acceptRepost=true;h.mode=null;await h.page.locator('[data-repost]').click();await h.post();assert.equal(h.posts().length,2);assert.equal(h.intents().length,2);assert.equal(await h.page.locator('.result.ok').count(),1);};unknown.options={mode:'500'};await check('unknown only queries; intentional repost requires confirmation/new operation',unknown);
+ const dropped=async h=>{await h.prepare();await h.login();await h.post();assert.match(await h.page.locator('#post-results').innerText(),/成功/);assert.equal(h.posts().length,1);assert.ok(h.calls.some(c=>c.path.includes('/posts/')&&c.method==='GET'));};dropped.options={drop:true};await check('lost success response recovered by GET, no resend',dropped);
+ const reload=async h=>{await h.prepare();await h.login();await h.post();await h.page.reload();await h.page.locator('#post-results').getByText('成功',{exact:false}).waitFor();assert.equal(h.posts().length,1);await h.prepare();await h.post();assert.equal(h.posts().length,1);assert.equal(h.intents().length,1);};await check('reload restores signed key/status; same parsed snapshot cannot issue a second key',reload);
+ const storage=async h=>{await h.prepare();await h.login();await h.post();assert.equal(h.posts().length,0);assert.equal(h.intents().length,1);assert.match(await h.page.locator('#post-results').innerText(),/保存/);};storage.options={storageFail:true};await check('sessionStorage failure stops before POST',storage);
+ await check('global ten/60s limit per event; success and retryable states stay separate',async h=>{await h.prepare(11);await h.login();await h.post();assert.equal(h.posts().length,11);assert.equal(await h.page.locator('.result.ok').count(),10);assert.match(await h.page.locator('#post-results').innerText(),/投稿制限|待機時間/);await h.post();assert.equal(h.posts().length,11);});
+ const rate=async h=>{await h.prepare(2);await h.login();await h.post();assert.match(await h.page.locator('#post-results').innerText(),/Discordの投稿制限|待機時間/);assert.equal(h.posts().length,2);await h.post();assert.equal(h.posts().length,2);};rate.options={mode:'429'};await check('Discord429 wait shown, no automatic POST retry',rate);
+ await check('session expiry requires re-login without replacing known operation',async h=>{await h.prepare();await h.login();await h.post();await h.page.evaluate(()=>{const k='discord-event-poster.session',s=JSON.parse(sessionStorage.getItem(k));s.expiresAt=0;sessionStorage.setItem(k,JSON.stringify(s));});await h.page.reload();await h.page.locator('[data-check]').click();await h.page.waitForFunction(()=>!document.getElementById('post').disabled);assert.match(await h.page.locator('#post-results').innerText(),/認証切れ/);await h.login();assert.equal(h.intents().length,1);assert.equal(h.posts().length,1);});
+ await check('manual/automatic eight tags, max five, authenticated tag mapping',async h=>{await h.prepare();await h.page.locator('[data-field="description"]').fill('ホラー 謎解き オンライン');await h.page.locator('.auto-tag').click();assert.equal(await h.page.locator('[data-tag]:checked').count(),3);assert.match(await h.page.locator('.tag-field').innerText(),/一致語/);await h.page.locator('[data-tag="周遊型"]').check();await h.page.locator('[data-tag="ホール型"]').check();await h.page.locator('[data-tag="ルーム型"]').click();assert.equal(await h.page.locator('[data-tag]:checked').count(),5);await h.login();await h.page.locator('#fetch-tags').click();await h.page.waitForFunction(()=>!document.getElementById('fetch-tags').disabled);await h.page.locator('#review').click();await h.post();assert.equal(h.posts()[0].payload.tagIds.length,5);});
+ for(const width of [1280,390,320]){const layout=async h=>{await h.prepare();const sizes=await h.page.evaluate(()=>[innerWidth,document.documentElement.scrollWidth]);assert.ok(sizes[1]<=sizes[0]);await fs.mkdir(path.join(root,'work/phase3-browser'),{recursive:true});await h.page.screenshot({path:path.join(root,'work/phase3-browser',width+'.png'),fullPage:true});};layout.options={width};await check('layout '+width,layout);}
+ await browser.close();console.log('PASS Phase3 browser/workerd E2E: '+passed+' cases; zero real Discord requests');
 }
-main().catch(async e=>{console.error(e);if(browser)await browser.close();process.exitCode=1;});
+main().catch(async e=>{console.error(e);await browser?.close();process.exitCode=1;});

@@ -5,7 +5,7 @@ const origin='https://poster.example';
 const password='TEST_ONLY_password';
 const names=['周遊型','ホール型','ルーム型','オンライン','持ち帰り','イマーシブ','謎解き','ホラー'];
 async function setup(){
- const map=new Map();const storage={get:async k=>structuredClone(map.get(k)),put:async(k,v)=>map.set(k,structuredClone(v)),delete:async k=>map.delete(k),setAlarm:async()=>{}};
+ const map=new Map();const storage={get:async k=>structuredClone(map.get(k)),put:async(k,v)=>map.set(k,structuredClone(v)),delete:async k=>map.delete(k),setAlarm:async()=>{},transaction:async fn=>fn(storage),sync:async()=>{}};
  const env={ALLOWED_ORIGIN:origin,DISCORD_BOT_TOKEN:'TEST_ONLY_BOT',DISCORD_FORUM_CHANNEL_ID:'123',APP_PASSWORD_HASH:'pbkdf2-sha256$600000$'+'ab'.repeat(16)+'$'+await passwordHash(password,'ab'.repeat(16)),SESSION_SIGNING_KEY:'c'.repeat(64)};
  const object=new AuthState({storage},env);env.AUTH_STATE={idFromName:()=>0,get:()=>({fetch:r=>object.fetch(r)})};
  const call=(path,method='GET',body,token,requestOrigin=origin)=>worker.fetch(new Request('https://discord-event-poster-api.monma5435.workers.dev'+path,{method,headers:{Origin:requestOrigin,'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},...(body?{body:JSON.stringify(body)}:{})}),env);
@@ -50,7 +50,7 @@ test('Discord failure stages preserve safe status diagnostics',async()=>{
  const statuses=[401,403,404,429,500,502,503];
  for(const status of statuses){
   const h=await setup(),s=await h.login(),logs=[],realFetch=globalThis.fetch,realError=console.error;console.error=(...args)=>logs.push(args.join(' '));
-  try { globalThis.fetch=async()=>new Response('SECRET_RESPONSE_BODY',{status});const r=await h.call('/api/forum/tags','GET',null,s.token);assert.equal(r.status,502);assert.ok(!(await r.text()).includes('SECRET_RESPONSE_BODY'));assert.deepEqual(JSON.parse(logs.at(-1)),{event:'request_failed',stage:'discord_response',errorName:'Error',status}); }
+  try { globalThis.fetch=async()=>new Response('SECRET_RESPONSE_BODY',{status});const r=await h.call('/api/forum/tags','GET',null,s.token);assert.equal(r.status,status===429?429:502);assert.ok(!(await r.text()).includes('SECRET_RESPONSE_BODY'));assert.deepEqual(JSON.parse(logs.at(-1)),{event:'request_failed',stage:'discord_response',errorName:'Error',status}); }
   finally { globalThis.fetch=realFetch;console.error=realError; }
  }
 });

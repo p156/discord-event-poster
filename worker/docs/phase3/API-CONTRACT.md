@@ -1,5 +1,10 @@
 # Phase 3 Step 1 — Bot投稿API契約 v1（確定・未実装）
 
+Step 4 update: the formal router is integrated behind the server-only
+`FORUM_POSTS_ENABLED === 'true'` gate. Default/production-equivalent requests
+remain 404. See [STEP4-RESULTS.md](STEP4-RESULTS.md) for frontend/cooldown/storage
+behavior; Step 3's disconnected-router statement below is historical.
+
 Step 3 implementation status: [STEP3-RESULTS.md](STEP3-RESULTS.md). The contract
 below is implemented by an internal handler only; none of its posting routes
 are connected to the public Worker. Existing public authentication/tag routes

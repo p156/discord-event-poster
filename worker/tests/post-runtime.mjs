@@ -10,7 +10,7 @@ import {installProductionPbkdf2Limit} from './production-crypto.mjs';
 const bundled=await build({entryPoints:[fileURLToPath(new URL('./post-runtime-entry.mjs',import.meta.url))],bundle:true,write:false,format:'esm',platform:'browser',target:'es2022'});
 const directory=await mkdtemp(path.join(tmpdir(),'poster-step3-'));
 const origin='https://runtime.example',base='https://discord-event-poster-api.monma5435.workers.dev';
-const options=convertV4MiniflareOptions({modules:true,script:`(${installProductionPbkdf2Limit.toString()})();\n`+bundled.outputFiles[0].text,compatibilityDate:'2026-04-01',durableObjects:{AUTH_STATE:{className:'AuthState',useSQLite:true}},resourcePersistencePath:directory,bindings:{ALLOWED_ORIGIN:origin,DISCORD_BOT_TOKEN:'TEST_ONLY',DISCORD_FORUM_CHANNEL_ID:'123',SESSION_SIGNING_KEY:'a'.repeat(64),APP_PASSWORD_HASH:'pbkdf2-sha256$600000$'+'ab'.repeat(16)+'$'+pbkdf2Sync('TEST_ONLY_PASSWORD',Buffer.from('ab'.repeat(16),'hex'),600000,32,'sha256').toString('hex')}});
+const options=convertV4MiniflareOptions({modules:true,script:`(${installProductionPbkdf2Limit.toString()})();\n`+bundled.outputFiles[0].text,compatibilityDate:'2026-04-01',durableObjects:{AUTH_STATE:{className:'AuthState',useSQLite:true}},resourcePersistencePath:directory,bindings:{FORUM_POSTS_ENABLED:'true',ALLOWED_ORIGIN:origin,DISCORD_BOT_TOKEN:'TEST_ONLY',DISCORD_FORUM_CHANNEL_ID:'123',SESSION_SIGNING_KEY:'a'.repeat(64),APP_PASSWORD_HASH:'pbkdf2-sha256$600000$'+'ab'.repeat(16)+'$'+pbkdf2Sync('TEST_ONLY_PASSWORD',Buffer.from('ab'.repeat(16),'hex'),600000,32,'sha256').toString('hex')}});
 let mf=new Miniflare(options),token;
 const payload={apiVersion:1,threadName:'TEST_ONLY',content:'TEST_ONLY',tagIds:[]};
 const call=(p,method='POST',body=payload,key,extra={})=>mf.dispatchFetch(base+p,{method,headers:{Origin:origin,'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{}),...(key?{'Idempotency-Key':key}:{}),...extra},...(method==='POST'?{body:JSON.stringify(body)}:{})});
@@ -24,7 +24,7 @@ try{
  const intents=await Promise.all(Array.from({length:10},intent));const submissions=await Promise.all(intents.map(i=>call('/api/forum/posts','POST',payload,i.idempotencyKey)));assert.equal(submissions.filter(r=>r.status===429).length,1);await Promise.all(submissions.map(r=>r.arrayBuffer()));
  console.log('PASS workerd SQLite transactions/sync: parallel same-key one write; app-wide max ten');
  await mf.dispose();mf=new Miniflare(options);
- const restored=await call('/api/forum/posts','POST',payload,i.idempotencyKey);assert.equal(restored.status,200);assert.equal(restored.headers.get('X-Test-Writes'),'0');assert.equal((await restored.json()).result.threadId,'789');
+ const restored=await call('/api/forum/posts','POST',payload,i.idempotencyKey);assert.equal(restored.status,200);assert.equal(restored.headers.get('X-Test-Writes'),'0');assert.equal((await restored.json()).result.threadId,'790');
  const fresh=await intent();const limited=await call('/api/forum/posts','POST',payload,fresh.idempotencyKey);assert.equal(limited.status,429);assert.equal((await limited.json()).error.code,'APP_RATE_LIMITED');assert.equal(limited.headers.get('X-Test-Writes'),'0');
  assert.equal((await call('/api/logout','POST',{})).status,200);assert.equal((await call('/api/forum/posts/'+i.operationId,'GET',null,i.idempotencyKey)).status,401);
  console.log('PASS workerd restart with persisted SQLite: signed session/history/quota preserved, replay no write, logout rejected');

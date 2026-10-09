@@ -148,5 +148,5 @@ test('public routes and RPC exports cannot reach the posting adapter, even with 
  for(const path of ['/api/forum/posts','/api/forum/post-intents','/api/diagnostics/post','/api/forum/posts/123'])assert.equal((await call(base,path,{Authorization:'Bearer '+s.token})).status,404);
  assert.equal((await call('https://evil.invalid','/api/login')).status,403);assert.equal((await call(base,'/api/login',{Origin:'https://evil.invalid'})).status,403);
  const built=await build({entryPoints:[fileURLToPath(new URL('../src/index.mjs',import.meta.url))],bundle:true,write:false,format:'esm',platform:'browser',metafile:true});
- assert.ok(!Object.keys(built.metafile.inputs).some(p=>p.endsWith('forum-posts.mjs')||p.endsWith('post-handler.mjs')));assert.deepEqual(built.metafile.outputs[Object.keys(built.metafile.outputs)[0]].exports.sort(),['AuthState','default','passwordHash']);
+ assert.ok(Object.keys(built.metafile.inputs).some(p=>p.endsWith('post-handler.mjs')));assert.deepEqual(built.metafile.outputs[Object.keys(built.metafile.outputs)[0]].exports.sort(),['AuthState','default','passwordHash']);
 });

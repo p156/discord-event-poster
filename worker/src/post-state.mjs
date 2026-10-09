@@ -1,8 +1,9 @@
 import {RETENTION_MS,PRINCIPAL,OperationError,canonicalClaims,validateClaims} from './post-keys.mjs';
 import {isSnowflake} from './forum-input.mjs';
+import {cooldownWait} from './discord-cooldown-state.mjs';
 const recordKey=id=>'posts:operation:'+id;
 const expiryKey=r=>'posts:expiry:'+String(r.expiresAt).padStart(13,'0')+':'+r.operationId;
-const rateKey='posts:rate',cooldownKey='posts:cooldown';
+const rateKey='posts:rate';
 const error=code=>({code,message:'投稿処理を完了できませんでした。',fields:[]});
 export async function scheduleEarlier(storage,at){const current=await storage.getAlarm?.();if(!current||current>at)await storage.setAlarm(at);}
 export async function cleanupPosts(storage,now){
@@ -43,8 +44,8 @@ export async function postState(storage,env,input,now=Date.now()){
     r=refresh(r,now);
     if(input.action!=='post.inspect'&&c.forumId!==env.DISCORD_FORUM_CHANNEL_ID&&input.action!=='post.finish')throw new OperationError('TARGET_CHANGED',409);
     if(input.action==='post.inspect'){
-      const cooldown=await tx.get(cooldownKey);
-      if(['not_started','retryable'].includes(r.status)&&cooldown?.until>now){r.nextAllowedAt=Math.max(r.nextAllowedAt||0,cooldown.until);r.error=error('DISCORD_RATE_LIMITED');}
+      const cooldown=await cooldownWait(tx,{route:'POST channel/threads',major:'channel:'+c.forumId},now);
+      if(['not_started','retryable'].includes(r.status)&&cooldown){r.nextAllowedAt=Math.max(r.nextAllowedAt||0,now+cooldown.retryAfterSeconds*1000);r.error=error('DISCORD_RATE_LIMITED');}
       await tx.put(key,r);return {record:view(r,now)};
     }
     if(input.action==='post.reserve'){
@@ -64,9 +65,9 @@ export async function postState(storage,env,input,now=Date.now()){
       let rate=await tx.get(rateKey);const marker=await tx.get('posts:rate-initialized');
       if(Boolean(rate)!==Boolean(marker))throw new OperationError('STATE_UNAVAILABLE',503);
       rate=rate||{slots:[],lastNow:0};const t=Math.max(now,rate.lastNow);rate.lastNow=t;rate.slots=rate.slots.filter(x=>x>t-60000);
-      const cooldown=await tx.get(cooldownKey)||{until:0};
-      const code=cooldown.until>t?'DISCORD_RATE_LIMITED':rate.slots.length>=10?'APP_RATE_LIMITED':null;
-      if(code){r.status='retryable';r.safeToRetry=true;r.error=error(code);r.nextAllowedAt=code==='APP_RATE_LIMITED'?rate.slots[0]+60000:cooldown.until;r.updatedAt=now;r.leaseId=null;await tx.put(key,r);await tx.put(rateKey,rate);return {record:view(r,t),httpStatus:429};}
+      const cooldown=await cooldownWait(tx,{route:'POST channel/threads',major:'channel:'+c.forumId},t);
+      const code=cooldown?'DISCORD_RATE_LIMITED':rate.slots.length>=10?'APP_RATE_LIMITED':null;
+      if(code){r.status='retryable';r.safeToRetry=true;r.error=error(code);r.nextAllowedAt=code==='APP_RATE_LIMITED'?rate.slots[0]+60000:t+cooldown.retryAfterSeconds*1000;r.updatedAt=now;r.leaseId=null;await tx.put(key,r);await tx.put('posts:rate-initialized',true);await tx.put(rateKey,rate);return {record:view(r,t),httpStatus:429};}
       rate.slots.push(t);r.status='sending';r.attempt++;r.attemptId=r.leaseId;r.leaseId=null;r.sendDeadline=now+120000;r.updatedAt=now;r.safeToRetry=false;r.nextAllowedAt=0;
       await tx.put('posts:rate-initialized',true);await tx.put(rateKey,rate);await tx.put(key,r);return {record:view(r,now,false),sendAllowed:true,attemptId:r.attemptId};
     }
@@ -98,7 +99,5 @@ async function saveCooldown(tx,r,retry,now){
   const seconds=typeof retry?.retryAfterSeconds==='number'&&Number.isFinite(retry.retryAfterSeconds)&&retry.retryAfterSeconds>0?retry.retryAfterSeconds:60;
   // Fixed 250ms safety margin; never truncate an upstream wait to 60 seconds.
   const until=Math.min(Number.MAX_SAFE_INTEGER,now+Math.ceil(seconds*1000)+250);
-  const previous=await tx.get(cooldownKey)||{until:0};
-  const data={until:Math.max(previous.until,until),global:retry?.global===true,scope:['user','shared','global'].includes(retry?.scope)?retry.scope:null,bucket:typeof retry?.bucket==='string'&&/^[a-zA-Z0-9_-]{1,128}$/.test(retry.bucket)?retry.bucket:null};
-  await tx.put(cooldownKey,data);r.nextAllowedAt=data.until;
+  r.nextAllowedAt=Math.max(r.nextAllowedAt||0,until); // Per-operation wait; shared scopes are recorded by the transport.
 }

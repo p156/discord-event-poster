@@ -9,7 +9,7 @@ const normalize=s=>s.replace(/\r\n/g,'\n').trim();
 const sha=s=>crypto.createHash('sha256').update(normalize(s)).digest('hex');
 async function main(){
   const result={timestamp:new Date().toISOString(),assets:[],excluded:[],browser:[]};
-  for(const name of ['index.html','styles.css','app.js']){
+  for(const name of ['index.html','styles.css','poster-client.js','app.js']){
     const response=await fetch(base+(name==='index.html'?'':name)+'?verify='+Date.now());
     assert.equal(response.status,200,name+' HTTP status');
     const remote=await response.text(),local=await fs.readFile(path.join(root,name),'utf8');

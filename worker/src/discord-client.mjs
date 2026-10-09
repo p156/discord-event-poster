@@ -10,9 +10,9 @@ export function fixedDiscordConfig(env){
 const headers=env=>({Authorization:'Bot '+env.DISCORD_BOT_TOKEN});
 // The old read-only API uses the same fixed targets/manual policy without changing
 // its error stages, Response interface or JSON parsing behavior.
-export function fetchLegacyForum(env,webhooks=false){
+export function fetchLegacyForum(env,webhooks=false,fetchImpl=globalThis.fetch){
   const config=fixedDiscordConfig(env);
-  return fetch(BASE+'channels/'+config.DISCORD_FORUM_CHANNEL_ID+(webhooks?'/webhooks':''),{headers:headers(config),redirect:'manual',signal:AbortSignal.timeout(10000)});
+  return fetchImpl(BASE+'channels/'+config.DISCORD_FORUM_CHANNEL_ID+(webhooks?'/webhooks':''),{headers:headers(config),redirect:'manual',signal:AbortSignal.timeout(10000)});
 }
 function rateInfo(response,body,validBody,secret){
   const waits=[];for(const value of [response.headers.get('Retry-After'),response.headers.get('X-RateLimit-Reset-After')])if(typeof value==='string'&&/^\d+(?:\.\d+)?$/.test(value)&&Number.isFinite(Number(value))&&Number(value)>0&&Number(value)<=Number.MAX_SAFE_INTEGER/1000)waits.push(Number(value));
@@ -21,6 +21,13 @@ function rateInfo(response,body,validBody,secret){
   const scope=response.headers.get('X-RateLimit-Scope');
   const rawBucket=response.headers.get('X-RateLimit-Bucket');
   return {retryAfterSeconds:seconds,automaticRetryAllowed:Boolean(validBody&&waits.length),global:body?.global===true||response.headers.get('X-RateLimit-Global')==='true',scope:['user','shared','global'].includes(scope)?scope:null,bucket:rawBucket&&!rawBucket.includes(secret)&&/^[a-zA-Z0-9_-]{1,128}$/.test(rawBucket)?rawBucket:null};
+}
+export async function discordRateInfo(response,secret,signal=AbortSignal.timeout(10000)){
+  let body=null,valid=false;let cancel;
+  const timeout=new Promise((_,reject)=>{cancel=()=>reject(new DiscordTransportError('TIMEOUT'));if(signal.aborted)cancel();else signal.addEventListener('abort',cancel,{once:true});});
+  try{body=await Promise.race([readBytes(response,signal),timeout]);valid=Boolean(body&&typeof body==='object'&&!Array.isArray(body));}catch{}
+  finally{signal.removeEventListener('abort',cancel);}
+  return rateInfo(response,body,valid,secret);
 }
 async function readBytes(response,signal){
   const reader=response.body?.getReader();if(!reader)throw new DiscordTransportError('JSON_INVALID',response.status);
