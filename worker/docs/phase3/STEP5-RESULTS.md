@@ -69,7 +69,7 @@ SESSION_SIGNING_KEYも変更しない。
 同一キーの連続・並列要求、異なるライブセッション、実ブラウザ2タブでDiscord POSTが1回となった。
 ブラウザ2タブのHTTP要求自体は2回だが、2回目は保存済み結果を返した。
 
-送信観測点で` sending`状態、attempt=1、共有slot=1、storage.sync完了を検証した。
+送信観測点で`sending`状態、attempt=1、共有slot=1、storage.sync完了を検証した。
 slot確保とsending保存は同一transaction内で行い、ネットワーク通信はtransaction外で行う。
 保存障害時は送信を開始しない。
 送信開始境界以降のクラッシュ、通信断、5xx、不正receipt、結果保存失敗はunknownとなり、自動再送しない。
@@ -180,9 +180,13 @@ unknownを自動再送せず、Discordで結果を手動確認してから明示
 
 ## 14. Commit SHA
 
-候補コードのcommitとpushを確認後、この節を更新する。
-自己参照を避け、検証済みコードcommitと、その結果を記録する文書のみのcommitを区別する。
+検証済み候補コード：`a8c19be063bcd440bf424a815da78c7bd4fae67d`。
+この候補は修正コード・追加試験・設計契約・本結果文書の初版を含む。
+本節の確定値は、候補push確認後の文書のみの追記commitに記録する。
+自己参照を避け、その文書commitのSHAは最終報告に別途記載する。
 
 ## 15. push結果
 
-確認後に記録する。本番デプロイ・Discord実通信・Step 6は実施していない。
+候補は`git push origin main`で成功。`git ls-remote origin refs/heads/main`が上記候補SHAと一致した。
+本結果の確定値追記は文書のみの追加commitとしてpushし、最終報告でその結果を明示する。
+本番デプロイ・Discord実通信・Step 6は実施していない。
