@@ -1,5 +1,9 @@
 # Phase 3 Step 1 — Bot API方式・契約確定
 
+Step 3 scope update: see [STEP3-RESULTS.md](STEP3-RESULTS.md). The current user
+instruction supersedes earlier Step 3 public-activation statements: posting
+handlers remain internal and disconnected; no capability/public write is enabled.
+
 更新日: 2026-10-09（日本時間）。設計基準main: ff63a4a001f3be4c5e5ecf2462b71645b534d8e6。
 Production実装基準は1359bb4（ff63a4aは文書のみ）。今回も実装・設定・Secret・migration・本番操作は変更しない。
 **運用仕様はユーザー確定。以下のAPI/状態/保存方式はStep 2以降の実装契約として確定する。実装済みという意味ではない。**

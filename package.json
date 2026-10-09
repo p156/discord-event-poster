@@ -3,10 +3,11 @@
   "version": "0.2.0",
   "private": true,
   "scripts": {
-    "test": "node tests-v010.js && node --test tests-acceptance.cjs worker/tests/security.test.mjs worker/tests/pbkdf2-production.test.mjs worker/tests/forum-posts.test.mjs",
+    "test": "node tests-v010.js && node --test tests-acceptance.cjs worker/tests/security.test.mjs worker/tests/pbkdf2-production.test.mjs worker/tests/forum-posts.test.mjs worker/tests/post-state.test.mjs",
     "test:browser": "node tests/browser-acceptance.cjs",
     "test:phase2-browser": "node tests/phase2-browser.cjs",
-    "test:worker-runtime": "node worker/tests/runtime.mjs"
+    "test:worker-runtime": "node worker/tests/runtime.mjs",
+    "test:post-runtime": "node worker/tests/post-runtime.mjs"
   },
   "devDependencies": {
     "esbuild": "0.28.2",

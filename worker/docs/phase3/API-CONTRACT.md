@@ -1,5 +1,10 @@
 # Phase 3 Step 1 — Bot投稿API契約 v1（確定・未実装）
 
+Step 3 implementation status: [STEP3-RESULTS.md](STEP3-RESULTS.md). The contract
+below is implemented by an internal handler only; none of its posting routes
+are connected to the public Worker. Existing public authentication/tag routes
+remain unchanged. Public activation requires a subsequent user instruction.
+
 対象main: ff63a4a。ユーザー確定仕様を [DESIGN.md](DESIGN.md) に記録。
 ここで「確定」は次Stepの実装契約であり現在の公開APIではない。1操作＝1イベント＝1スレッド。
 認証/Origin/固定先を維持し、新投稿経路に明示Host検証を加える。期限付き操作キーで30日後の再送を防ぐ。

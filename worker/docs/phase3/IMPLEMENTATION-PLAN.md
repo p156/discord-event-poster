@@ -1,5 +1,9 @@
 # Phase 3 実装計画 — Step 1確定、Bot API方式
 
+Step 3 scope update: [STEP3-RESULTS.md](STEP3-RESULTS.md). Contrary to the original
+future-publication plan below, the current Step 3 instruction requires internal
+integration only. Public activation/capabilities and frontend work remain deferred.
+
 基準main: ff63a4a。ユーザー確定仕様/API契約は [DESIGN.md](DESIGN.md) / [API-CONTRACT.md](API-CONTRACT.md)。
 下記のProductionファイルは将来の変更予定。今回は設計3文書/READMEだけ変更する。
 全Step共通: 既存Worker discord-event-poster-api、AUTH_STATE/AuthState/personal-auth-v1/auth-v1、

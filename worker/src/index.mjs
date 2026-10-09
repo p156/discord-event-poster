@@ -3,6 +3,8 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { hasAllowedHost } from './request-boundary.mjs';
 import { fetchLegacyForum } from './discord-client.mjs';
 import { forumTagMapping } from './forum-tags.mjs';
+import { postState,cleanupPosts,scheduleEarlier } from './post-state.mjs';
+import { verifyInternal,OperationError } from './post-keys.mjs';
 
 const enc = new TextEncoder();
 const hex = bytes => Array.from(new Uint8Array(bytes), x=>x.toString(16).padStart(2,'0')).join('');
@@ -29,14 +31,14 @@ export class AuthState {
   constructor(state,env) { this.storage=state.storage; this.env=env; this.queue=Promise.resolve(); }
   // Serialize the entire authentication operation, including PBKDF2 and storage awaits.
   fetch(request) { const operation=this.queue.then(()=>this.handle(request)); this.queue=operation.catch(()=>{}); return operation; }
-  alarm() { const operation=this.queue.then(async()=>{const now=Date.now();const sessions=(await this.storage.get('sessions')||[]).filter(s=>s.expires>now);const attempts=(await this.storage.get('attempts')||[]).filter(t=>t>now-900000);await this.storage.put('sessions',sessions);await this.storage.put('attempts',attempts);if(sessions.length||attempts.length)await this.storage.setAlarm(now+3600000);});this.queue=operation.catch(()=>{});return operation; }
+  alarm() { const operation=this.queue.then(async()=>{const now=Date.now();const sessions=(await this.storage.get('sessions')||[]).filter(s=>s.expires>now);const attempts=(await this.storage.get('attempts')||[]).filter(t=>t>now-900000);await this.storage.put('sessions',sessions);await this.storage.put('attempts',attempts);await cleanupPosts(this.storage,now);if(sessions.length||attempts.length)await scheduleEarlier(this.storage,now+3600000);});this.queue=operation.catch(()=>{});return operation; }
   async handle(request) {
-    const {action,password,token}=await request.json(); const now=Date.now();
+    const packet=await request.json();const {action,password,token}=packet; const now=Date.now();
     const sessions=(await this.storage.get('sessions')||[]).filter(s=>s.expires>now);
     if(action==='login') {
       const attempts=(await this.storage.get('attempts')||[]).filter(t=>t>now-900000);
       if(attempts.length>=5)return json({error:'ログイン試行上限です。15分後に再試行してください。'},429);
-      attempts.push(now); await this.storage.put('attempts',attempts); await this.storage.setAlarm(now+3600000);
+      attempts.push(now); await this.storage.put('attempts',attempts); await scheduleEarlier(this.storage,now+3600000);
       const [algorithm,iterations,salt,expected]=this.env.APP_PASSWORD_HASH.split('$');
       const actual=await passwordHash(password,salt,Number(iterations));
       if(!equal(actual,expected))return json({error:'認証できませんでした。'},401);
@@ -46,6 +48,12 @@ export class AuthState {
     }
     const verified=await verifyToken(token||'',this.env.SESSION_SIGNING_KEY);
     if(!verified||!sessions.some(s=>s.id===verified.id&&s.expires===verified.expires))return json({error:'ログインし直してください。'},401);
+    if(typeof action==='string'&&action.startsWith('post.')){
+      const {proof,...body}=packet;
+      if(request.url!=='https://internal/auth'||request.method!=='POST'||!await verifyInternal(body,proof,this.env.SESSION_SIGNING_KEY))return json({error:{code:'INTERNAL_ACCESS_REJECTED'}},403);
+      try{return json(await postState(this.storage,this.env,body,now));}
+      catch(error){return json({error:{code:error instanceof OperationError?error.code:'STATE_UNAVAILABLE'}},error instanceof OperationError?error.httpStatus:503);}
+    }
     if(action==='logout')await this.storage.put('sessions',sessions.filter(s=>s.id!==verified.id));
     return json({authenticated:true});
   }
