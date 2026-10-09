@@ -224,5 +224,7 @@ wrangler.jsonc.bak: 7F28CAB37EACF66ED31162FF08640D74B18878B9B3CFF75EBB278286F925
 
 ## 12. Commit SHA
 
-本書初版のcommit/push確認後に確定値を追記する。
-自己参照を避け、結果追記だけのcommitは最終報告で区別する。
+本書初版commit：`10e9a0f532828cb22cc863a7b9ec0e0ef42a32e6`。
+mainへのpushは成功し、ls-remoteのSHA一致を確認した。
+自己参照を避け、この結果追記だけのcommitは最終報告で区別する。
+Stage 1の実デプロイは未実施で、ユーザーの実行承認を待つ。
