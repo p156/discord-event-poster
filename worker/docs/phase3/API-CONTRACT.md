@@ -249,6 +249,18 @@ GET/pending pollは2秒から10秒へbackoff。read/intent濫用対策は別制�
 
 ## 9. UI/本番境界
 
+### Step 5追加：サーバー側の停止モード
+
+`FORUM_POSTS_ENABLED`はサーバー設定だけで制御する。
+文字列`true`は既存の全投稿APIを有効化する。
+文字列`read-only`は`GET /api/forum/posts/{operationId}`と、そのGET向けの正当なpreflightだけを許可する。
+操作発行・投稿POSTは404とする。
+状態GETにも既存のBearer、署名操作キー、Host、Origin、有効期限検証を適用する。
+セッション応答の`capabilities.forumPostStatus`は`true`または`read-only`でtrue、`forumPosts`は`true`の場合だけtrueとする。
+未設定・その他の値は全投稿APIを404にする。既存のデフォルトは変更しない。
+この追加は書き込み停止後の結果確認を可能にするためで、秘密情報・履歴の再生成は不要。
+停止前に受理した処理は完了する可能性がある。設定変更は進行中のDiscord通信の取り消しを保証しない。
+
 confirm→login（必要時）→tags ID確定→snapshot確認→intent発行→sessionStorage保存→POST。
 storage/履歴永続化失敗はDiscord送信前停止。beforeunload/通信断で新intentへfallbackしない。
 reloadはoperationId＋ticketでGET、期限切れ410表示。同一内容の再投稿は確認画面で新発行、unknownは手動確認先行。

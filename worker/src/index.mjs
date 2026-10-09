@@ -4,7 +4,7 @@ import { hasAllowedHost } from './request-boundary.mjs';
 import { fetchLegacyForum } from './discord-client.mjs';
 import { forumTagMapping } from './forum-tags.mjs';
 import { postState,cleanupPosts,scheduleEarlier } from './post-state.mjs';
-import { verifyInternal,OperationError } from './post-keys.mjs';
+import { verifyInternal,OperationError,UUID } from './post-keys.mjs';
 import {createPostHandler} from './post-handler.mjs';
 import {cooldownState} from './discord-cooldown-state.mjs';
 import {createDiscordFetch} from './discord-cooldown.mjs';
@@ -88,7 +88,8 @@ export default {
     try {
       const url=new URL(request.url),path=url.pathname;
       if(path==='/api/forum/posts'||path==='/api/forum/post-intents'||path.startsWith('/api/forum/posts/')){
-        if(env.FORUM_POSTS_ENABLED!=='true')response=json({error:'APIが見つかりません。'},404);
+        const readOnly=env.FORUM_POSTS_ENABLED==='read-only'&&path.startsWith('/api/forum/posts/')&&UUID.test(path.slice('/api/forum/posts/'.length))&&(request.method==='GET'||request.method==='OPTIONS'&&request.headers.get('Access-Control-Request-Method')==='GET');
+        if(env.FORUM_POSTS_ENABLED!=='true'&&!readOnly)response=json({error:'APIが見つかりません。'},404);
         else return createPostHandler()(request,env);
       }
       else if(url.search)response=json({error:'パラメーターは利用できません。'},400);
@@ -106,7 +107,7 @@ export default {
         const token=request.headers.get('Authorization')?.match(/^Bearer ([a-f0-9.]{1,160})$/)?.[1]||'';
         stage='auth_check';
         response=await auth(env,{action:path==='/api/logout'?'logout':'check',token});
-        if(response.ok&&path==='/api/session')response=json({authenticated:true,capabilities:{forumPosts:env.FORUM_POSTS_ENABLED==='true',apiVersion:1,operationTicket:'v1'}});
+        if(response.ok&&path==='/api/session')response=json({authenticated:true,capabilities:{forumPosts:env.FORUM_POSTS_ENABLED==='true',forumPostStatus:['true','read-only'].includes(env.FORUM_POSTS_ENABLED),apiVersion:1,operationTicket:'v1'}});
         if(response.ok&&path==='/api/forum/tags') {
           stage='discord_fetch';
           const discordResponse=await fetchLegacyForum(env,false,createDiscordFetch(env,token));

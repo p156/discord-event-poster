@@ -18,9 +18,11 @@ async function command(env,token,body){
 }
 export function createDiscordFetch(env,token,fetchImpl=globalThis.fetch){
   return async(url,opts={})=>{
+    if(opts.signal?.aborted)throw new DiscordTransportError('TIMEOUT');
     const scope=scopeFor(url,opts.method||'GET',env.DISCORD_FORUM_CHANNEL_ID);
     const {retry}=await command(env,token,{action:'discord.check',scope});
     if(retry)throw new DiscordTransportError('HTTP_ERROR',429,retry);
+    if(opts.signal?.aborted)throw new DiscordTransportError('TIMEOUT');
     const response=await fetchImpl(url,opts);
     const raw=response.headers.get('X-RateLimit-Bucket');const bucket=raw&&!raw.includes(env.DISCORD_BOT_TOKEN)&&/^[a-zA-Z0-9_-]{1,128}$/.test(raw)?raw:null;
     if(response.status===429||bucket){

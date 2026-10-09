@@ -66,3 +66,9 @@ Workerのサーバー設定`FORUM_POSTS_ENABLED`が文字列`true`の場合だ�
 既存Secretの再生成や認証の無効化は不要です。
 
 詳細は[Step 4の記録](worker/docs/phase3/STEP4-RESULTS.md)、[API契約](worker/docs/phase3/API-CONTRACT.md)、[実装計画](worker/docs/phase3/IMPLEMENTATION-PLAN.md)を参照してください。
+
+Step 5で、サーバー設定`FORUM_POSTS_ENABLED=read-only`による安全な停止モードを追加しました。
+このモードでは認証付き投稿状態GETだけを維持し、操作発行・投稿POSTは404にします。
+未設定の場合は状態GETも含めて無効です。リクエスト側から設定を変更できません。
+履歴・署名鍵・Durable Objectを削除せず停止してください。
+検証結果と本番確認の残件は[Release Candidate Gate](worker/docs/phase3/STEP5-RESULTS.md)を参照してください。

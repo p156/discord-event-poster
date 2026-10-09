@@ -1,6 +1,6 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const {webcrypto,randomUUID}=require('node:crypto');
-function harness({outcome='succeeded',storageFail=false,enabled=true,saved,postThrow=false}={}){
+function harness({outcome='succeeded',storageFail=false,enabled=true,saved,postThrow=false,mutateIntent}={}){
  const elements={},data=saved||new Map(),local=new Map([['discord-event-poster.webhook','PRIVATE_OLD_URL'],['other','keep']]),calls=[],alerts=[];
  const el=id=>elements[id]??={value:'',disabled:false,innerHTML:'',textContent:'',dataset:{},listeners:{},classList:{add(){},remove(){},toggle(){},contains(){return false}},addEventListener(k,f){this.listeners[k]=f;},focus(){}};
  const uuid=randomUUID(),now=Date.now();
@@ -10,6 +10,7 @@ function harness({outcome='succeeded',storageFail=false,enabled=true,saved,postT
    else if(path==='/api/session')body={authenticated:true,capabilities:{forumPosts:enabled,apiVersion:1}};
    else if(path==='/api/forum/post-intents'){const p=JSON.parse(opts.body),hash=await ctx.window.PosterClient.hash(p);body={apiVersion:1,operationId:uuid,idempotencyKey:'v1.eA.'+'c'.repeat(64),payloadHash:hash,issuedAt:new Date(now).toISOString(),expiresAt:new Date(now+2592000000).toISOString(),status:'not_started'};}
    else {if(postThrow&&opts.method==='POST')throw new Error('PRIVATE_NETWORK');body={apiVersion:1,operationId:uuid,status:outcome,replayed:false,attempt:1,expiresAt:new Date(now+2592000000).toISOString(),safeToRetry:false,retryAfterSeconds:outcome==='retryable'?60:null,error:outcome==='unknown'?{code:'OUTCOME_UNKNOWN',message:'PRIVATE_UPSTREAM'}:null,result:outcome==='succeeded'?{guildId:'456',forumId:'123',threadId:'789',messageId:'790',url:'javascript:alert(1)'}:null};}
+   if(path==='/api/forum/post-intents'&&mutateIntent)body=mutateIntent(body);
    return {ok:true,status:200,headers:{get:()=>null},json:async()=>body};
  }};
  vm.createContext(ctx);for(const name of ['poster-client.js','app.js'])vm.runInContext(fs.readFileSync(name,'utf8'),ctx);
@@ -23,4 +24,5 @@ test('Bot flow stores keys not body; no direct Discord POST; trusted link rebuil
 test('unknown excludes ordinary retry; upstream text is not rendered',async()=>{const h=harness({outcome:'unknown'});h.prepare();await h.login();await h.post();await h.post();assert.match(h.el('post-results').innerHTML,/結果不明/);assert.ok(!h.el('post-results').innerHTML.includes('PRIVATE_UPSTREAM'));assert.equal(h.calls.filter(c=>c.url.endsWith('/posts')).length,1);});
 test('POST response loss only queries same operation, never issues another key',async()=>{const h=harness({postThrow:true});h.prepare();await h.login();await h.post();assert.equal(h.calls.filter(c=>c.url.endsWith('/posts')).length,1);assert.equal(h.calls.filter(c=>c.url.endsWith('post-intents')).length,1);assert.equal(h.calls.filter(c=>c.opts.method==='GET'&&c.url.includes('/posts/')).length,1);assert.match(h.el('post-results').innerHTML,/成功/);});
 test('storage failure prevents Bot request',async()=>{const h=harness({storageFail:true});h.prepare();await h.login();await h.post();assert.equal(h.calls.filter(c=>c.url.endsWith('/posts')).length,0);assert.match(h.el('post-results').innerHTML,/保存/);});
+test('coerced operation metadata is rejected before any posting request',async()=>{for(const change of [b=>({...b,operationId:[b.operationId]}),b=>({...b,payloadHash:[b.payloadHash]}),b=>({...b,issuedAt:[b.issuedAt]})]){const h=harness({mutateIntent:change});h.prepare();await h.login();await h.post();assert.equal(h.calls.filter(c=>c.url.endsWith('/posts')).length,0);assert.match(h.el('post-results').innerHTML,/応答/);}});
 test('XSS escaped in cards/preview; no Webhook send/fallback source',()=>{const h=harness();h.el('source').value='【東京】『<img src=x onerror=alert(1)>』<script>alert(1)</script>';h.el('parse').onclick();h.el('review').onclick();for(const id of ['cards','preview'])assert.ok(!h.el(id).innerHTML.includes('<script>')&&!h.el(id).innerHTML.includes('<img'));const code=fs.readFileSync('app.js','utf8')+fs.readFileSync('poster-client.js','utf8');assert.ok(!code.includes('parseWebhook'));assert.ok(!code.includes('wait=true'));assert.ok(!code.includes('api/webhooks/'));});

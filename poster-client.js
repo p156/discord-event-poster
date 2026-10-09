@@ -16,7 +16,7 @@
     if(new TextEncoder().encode(JSON.stringify(p)).length>16384)throw fail('BODY_TOO_LARGE');return p;
   }
   async function hash(raw){const p=normalize(raw);return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([1,p.threadName,p.content,p.tagIds])))),x=>x.toString(16).padStart(2,'0')).join('');}
-  function validMeta(m){return m&&UUID.test(m.operationId)&&typeof m.idempotencyKey==='string'&&m.idempotencyKey.length<=1024&&/^v1\.[A-Za-z0-9_-]+\.[a-f0-9]{64}$/.test(m.idempotencyKey)&&/^[a-f0-9]{64}$/.test(m.payloadHash)&&Number.isFinite(Date.parse(m.issuedAt))&&Date.parse(m.expiresAt)-Date.parse(m.issuedAt)===2592000000&&states.includes(m.status);}
+  function validMeta(m){return m&&typeof m.operationId==='string'&&UUID.test(m.operationId)&&typeof m.idempotencyKey==='string'&&m.idempotencyKey.length<=1024&&/^v1\.[A-Za-z0-9_-]+\.[a-f0-9]{64}$/.test(m.idempotencyKey)&&typeof m.payloadHash==='string'&&/^[a-f0-9]{64}$/.test(m.payloadHash)&&typeof m.issuedAt==='string'&&typeof m.expiresAt==='string'&&Number.isFinite(Date.parse(m.issuedAt))&&Date.parse(m.expiresAt)-Date.parse(m.issuedAt)===2592000000&&states.includes(m.status);}
   function create(){
     let session=null,operations=[],storageError=false;
     try{const s=JSON.parse(sessionStorage.getItem(SESSION)||'null');if(s&&typeof s.token==='string'&&/^[a-f0-9.]{1,160}$/.test(s.token)&&Number.isSafeInteger(s.expiresAt))session=s;}catch{}

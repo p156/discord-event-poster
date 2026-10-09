@@ -26,6 +26,10 @@ try{
  await mf.dispose();mf=new Miniflare(options);
  const restored=await call('/api/forum/posts','POST',payload,i.idempotencyKey);assert.equal(restored.status,200);assert.equal(restored.headers.get('X-Test-Writes'),'0');assert.equal((await restored.json()).result.threadId,'790');
  const fresh=await intent();const limited=await call('/api/forum/posts','POST',payload,fresh.idempotencyKey);assert.equal(limited.status,429);assert.equal((await limited.json()).error.code,'APP_RATE_LIMITED');assert.equal(limited.headers.get('X-Test-Writes'),'0');
+ await mf.dispose();mf=new Miniflare({...options,workers:options.workers.map(worker=>({...worker,config:{...worker.config,env:{...worker.config.env,FORUM_POSTS_ENABLED:{type:'text',value:'read-only'}}}}))});
+ const readOnly=await call('/api/forum/posts/'+i.operationId,'GET',null,i.idempotencyKey);assert.equal(readOnly.status,200);assert.equal((await readOnly.json()).status,'succeeded');assert.equal(readOnly.headers.get('X-Test-Writes'),'0');
+ assert.equal((await call('/api/forum/posts','POST',payload,i.idempotencyKey)).status,404);assert.equal((await call('/api/forum/post-intents')).status,404);
+ console.log('PASS workerd read-only rollback: persisted receipt readable; new writes disabled');
  assert.equal((await call('/api/logout','POST',{})).status,200);assert.equal((await call('/api/forum/posts/'+i.operationId,'GET',null,i.idempotencyKey)).status,401);
  console.log('PASS workerd restart with persisted SQLite: signed session/history/quota preserved, replay no write, logout rejected');
  await mf.dispose();mf=new Miniflare({...options,resourcePersistencePath:path.join(directory,'failure-cases')});

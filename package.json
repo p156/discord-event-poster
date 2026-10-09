@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "scripts": {
-    "test": "node tests-v010.js && node --test tests-acceptance.cjs tests/legacy-webhook-acceptance.cjs worker/tests/security.test.mjs worker/tests/pbkdf2-production.test.mjs worker/tests/forum-posts.test.mjs worker/tests/post-state.test.mjs worker/tests/step4.test.mjs",
+    "test": "node tests-v010.js && node --test tests-acceptance.cjs tests/legacy-webhook-acceptance.cjs worker/tests/security.test.mjs worker/tests/pbkdf2-production.test.mjs worker/tests/forum-posts.test.mjs worker/tests/post-state.test.mjs worker/tests/step4.test.mjs worker/tests/release-gate.test.mjs",
     "test:browser": "node tests/browser-acceptance.cjs",
     "test:phase2-browser": "node tests/legacy-phase2-browser.cjs",
     "test:legacy-browser": "node tests/legacy-webhook-browser.cjs",
