@@ -8,7 +8,7 @@ function environment(hash){
  const data=new Map();const storage={get:async k=>structuredClone(data.get(k)),put:async(k,v)=>data.set(k,structuredClone(v)),setAlarm:async()=>{}};
  const env={ALLOWED_ORIGIN:'https://poster.example',DISCORD_FORUM_CHANNEL_ID:'123',DISCORD_BOT_TOKEN:'TEST_ONLY_BOT',APP_PASSWORD_HASH:hash,SESSION_SIGNING_KEY:'a'.repeat(64)};
  const state=new AuthState({storage},env);env.AUTH_STATE={idFromName:()=>0,get:()=>({fetch:r=>state.fetch(r)})};
- const call=(path,body,token)=>worker.fetch(new Request('https://worker.example'+path,{method:body?'POST':'GET',headers:{Origin:env.ALLOWED_ORIGIN,'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},...(body?{body:JSON.stringify(body)}:{})}),env);
+ const call=(path,body,token)=>worker.fetch(new Request('https://discord-event-poster-api.monma5435.workers.dev'+path,{method:body?'POST':'GET',headers:{Origin:env.ALLOWED_ORIGIN,'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},...(body?{body:JSON.stringify(body)}:{})}),env);
  return {env,call};
 }
 test('production cap reproduces old PBKDF2 failure; 100k boundary remains supported',async()=>{

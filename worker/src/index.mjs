@@ -1,7 +1,9 @@
 import { pbkdf2Async } from '@noble/hashes/pbkdf2.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { hasAllowedHost } from './request-boundary.mjs';
+import { fetchLegacyForum } from './discord-client.mjs';
+import { forumTagMapping } from './forum-tags.mjs';
 
-const TAGS = ['周遊型','ホール型','ルーム型','オンライン','持ち帰り','イマーシブ','謎解き','ホラー'];
 const enc = new TextEncoder();
 const hex = bytes => Array.from(new Uint8Array(bytes), x=>x.toString(16).padStart(2,'0')).join('');
 const unhex = value => Uint8Array.from(value.match(/../g)||[], x=>parseInt(x,16));
@@ -64,13 +66,9 @@ function diagnostic(stage,error,status) {
   console.error(JSON.stringify(entry));
 }
 async function auth(env,payload) { const stub=env.AUTH_STATE.get(env.AUTH_STATE.idFromName('personal-auth-v1'));return stub.fetch(new Request('https://internal/auth',{method:'POST',body:JSON.stringify(payload)})); }
-async function discord(env,path) {
-  // Cloudflare Workers production failed with redirect:error; manual prevents automatic token forwarding. 3xx is rejected below.
-  const response=await fetch('https://discord.com/api/v10/'+path,{headers:{Authorization:'Bot '+env.DISCORD_BOT_TOKEN},redirect:'manual',signal:AbortSignal.timeout(10000)});
-  return response;
-}
 export default {
   async fetch(request,env) {
+    if(!hasAllowedHost(request))return json({error:'アクセスできません。'},403);
     const origin=request.headers.get('Origin');
     if(!origin||origin!==env.ALLOWED_ORIGIN)return json({error:'アクセスできません。'},403);
     const headers={'Access-Control-Allow-Origin':origin,'Vary':'Origin','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'};
@@ -94,7 +92,7 @@ export default {
         response=await auth(env,{action:path==='/api/logout'?'logout':'check',token});
         if(response.ok&&path==='/api/forum/tags') {
           stage='discord_fetch';
-          const discordResponse=await discord(env,'channels/'+env.DISCORD_FORUM_CHANNEL_ID);
+          const discordResponse=await fetchLegacyForum(env);
           stage='discord_response';
           if(discordResponse.status>=300&&discordResponse.status<400){diagnostic(stage,null,discordResponse.status);response=json({error:'Discordフォーラムを取得できませんでした。'},502);}
           else if(!discordResponse.ok){diagnostic(stage,null,discordResponse.status);response=json({error:'Discordフォーラムを取得できませんでした。'},502);}
@@ -105,9 +103,7 @@ export default {
             if(!channel||channel.id!==env.DISCORD_FORUM_CHANNEL_ID||channel.type!==15||!Array.isArray(channel.available_tags)){diagnostic(stage,{name:'InvalidForumResponse'});response=json({error:'Discordフォーラムを取得できませんでした。'},502);}
             else {
               stage='discord_tag_mapping';
-              const tags=channel.available_tags.map(t=>({id:t.id,name:t.name}));const mapping={},missing=[],duplicates=[];
-              for(const name of TAGS){const matches=tags.filter(t=>t.name===name);if(matches.length===0)missing.push(name);else if(matches.length>1)duplicates.push(name);else if(/^\d{1,20}$/.test(matches[0].id))mapping[name]=matches[0].id;else missing.push(name);}
-              response=json({forumId:channel.id,tags,mapping,missing,duplicates,unknown:tags.filter(t=>!TAGS.includes(t.name)).map(t=>t.name)});
+              response=json(forumTagMapping(channel));
             }
           }
         } else if(response.ok&&path==='/api/forum/webhook-check') {
@@ -116,7 +112,7 @@ export default {
           else {
             // Only list webhooks belonging to the fixed forum; never proxy arbitrary API routes.
             stage='discord_fetch';
-            const discordResponse=await discord(env,'channels/'+env.DISCORD_FORUM_CHANNEL_ID+'/webhooks');
+            const discordResponse=await fetchLegacyForum(env,true);
             stage='discord_response';
             if(discordResponse.status>=300&&discordResponse.status<400){diagnostic(stage,null,discordResponse.status);response=json({error:'Webhookの所属確認に失敗しました。'},502);}
             else if(!discordResponse.ok){diagnostic(stage,null,discordResponse.status);response=json({error:'Webhookの所属確認に失敗しました。'},502);}

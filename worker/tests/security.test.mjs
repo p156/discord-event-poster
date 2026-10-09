@@ -8,7 +8,7 @@ async function setup(){
  const map=new Map();const storage={get:async k=>structuredClone(map.get(k)),put:async(k,v)=>map.set(k,structuredClone(v)),delete:async k=>map.delete(k),setAlarm:async()=>{}};
  const env={ALLOWED_ORIGIN:origin,DISCORD_BOT_TOKEN:'TEST_ONLY_BOT',DISCORD_FORUM_CHANNEL_ID:'123',APP_PASSWORD_HASH:'pbkdf2-sha256$600000$'+'ab'.repeat(16)+'$'+await passwordHash(password,'ab'.repeat(16)),SESSION_SIGNING_KEY:'c'.repeat(64)};
  const object=new AuthState({storage},env);env.AUTH_STATE={idFromName:()=>0,get:()=>({fetch:r=>object.fetch(r)})};
- const call=(path,method='GET',body,token,requestOrigin=origin)=>worker.fetch(new Request('https://worker.example'+path,{method,headers:{Origin:requestOrigin,'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},...(body?{body:JSON.stringify(body)}:{})}),env);
+ const call=(path,method='GET',body,token,requestOrigin=origin)=>worker.fetch(new Request('https://discord-event-poster-api.monma5435.workers.dev'+path,{method,headers:{Origin:requestOrigin,'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},...(body?{body:JSON.stringify(body)}:{})}),env);
  const login=async()=>{const r=await call('/api/login','POST',{password});assert.equal(r.status,200);return r.json();};return {env,object,map,call,login};
 }
 test('signed sessions: tamper, expiration, logout replay and cross-instance revocation',async()=>{
