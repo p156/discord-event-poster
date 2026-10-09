@@ -280,5 +280,7 @@ wrangler.jsonc.bak: 7F28CAB37EACF66ED31162FF08640D74B18878B9B3CFF75EBB278286F925
 
 ## 13. Commit SHAとpush結果
 
-本書の初版commitとmainへのpush確認後、確定値を追記する。
-その確定値を記録する文書のみの追加commitのSHAは、自己参照を避けて最終報告へ記載する。
+監査文書の初版commit：`349a4f1205837eacc3253eea323e3ce3998e5895`。
+`git push origin main`は成功し、`git ls-remote origin refs/heads/main`が同SHAと一致した。
+この確定値を記録する文書のみの追加commitのSHAは、自己参照を避けて最終報告へ記載する。
+本番Workerの設定変更、デプロイ、Discord実投稿は行っていない。
