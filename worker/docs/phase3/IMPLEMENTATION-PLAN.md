@@ -1,100 +1,148 @@
-# Phase 3 Step別実装計画（未承認・今回は実装しない）
+# Phase 3 実装計画 — Step 1確定、Bot API方式
 
-基準main: 1359bb4。各Stepは将来の変更対象を示す。今回変更したファイルを示すものではない。
-全Step共通: 既存Worker名、PBKDF2 600k、既存ハッシュ/署名鍵、AUTH_STATE、sessions/attempts、auth-v1、manual＋3xx拒否を維持する。
-実装案は [DESIGN.md](DESIGN.md)、入出力は [API-CONTRACT.md](API-CONTRACT.md)。
+基準main: ff63a4a。ユーザー確定仕様/API契約は [DESIGN.md](DESIGN.md) / [API-CONTRACT.md](API-CONTRACT.md)。
+下記のProductionファイルは将来の変更予定。今回は設計3文書/READMEだけ変更する。
+全Step共通: 既存Worker discord-event-poster-api、AUTH_STATE/AuthState/personal-auth-v1/auth-v1、
+PBKDF2-SHA256 600k、既存Secret、Bearer失効/ログイン制限、固定forum、manual＋3xx拒否を維持。
+新Webhook Secret、DO migration/new binding/new Workerは不要。
 
-## Step 1: 投稿方式・契約の確定（Owner Gate）
+## Step 1: 設計・API契約確定（今回完了）
 
-- 目的: 実装前に互換性、権限、曖昧な結果の扱いを確定する。
-- 変更対象: 本ディレクトリの3文書、README.md。Production code/Secret/設定はまだ変更しない。
-- 内容: Webhook/Bot採否、固定投稿先、全投稿auth必須、投稿頻度、tombstone/容量、storage不可の扱い、intentional repost、切替/旧Webhook失効をOwner判断として記録。UI previewの正規化、重複JSON member検出parserなどの技術詳細は実装担当が契約に沿って確定する。
-- テスト/レビュー: 代表payloadの本文が既存contentFor/threadNameと一致するか、100/2000 UTF-16境界、5タグ、未登録/重複/required/moderated、状態/HTTP表に矛盾がないかをレビューする。Bot案でもAPI/状態契約が保てるか確認する。
-- 完了条件: 判断欄に確定値と根拠が入り、pending/unknownと非作成の再試行条件が合意される。
-- リスク: Webhook表示維持と新Webhook入替の希望の競合。情報が足りない権限・Secret運用を勝手に確定しない。
+- 対象: DESIGN.md、API-CONTRACT.md、IMPLEMENTATION-PLAN.md、README.md。
+- 内容: Bot方式/表示、解析preview非認証、投稿auth、全利用者10attempt/連続60秒、履歴30日、
+  永続化前送信禁止、確認＋新IDでの再投稿、不明自動retry禁止、fallback禁止、Bot受入後の旧Webhook削除を確定要件へ変更。
+- 技術契約: サーバーUUID＋30日期限署名ticket、発行API、POST、同ID GET、state/error/Unicode/16KiB、
+  atomic beginSend＋shared sliding window、expiry後410/record消失503に確定。
+- 調査: Forum createのpayload/receipt/権限、400系/429/5xx、mentions、thread/message編集削除、Workers redirectを公式優先で確認。
+- レビュー: 旧Webhook推奨/追加Secret/10回10分/2秒間隔/無期限tombstone/未決Owner Gateを後続契約から撤去。
+- 完了条件: Bot方式で3文書が一致、Step 2/3を分離しpublic writeを先に開かない、保存/expiry/rate障害の扱いが明確。
+- リスク/限界: タグ取得成功をSEND_MESSAGES確認と誤る、Host検証を既存実装ありと誤認、公式characters単位を推測する。いずれも設計へ明記。
+- 実装開始: 次のユーザー指示までStep 2へ進まない。
 
-## Step 2: Workerのvalidation・transport adaptor（外部書込を公開しない）
+## Step 2: Worker側Bot投稿処理・入力検証（非公開adaptor）
 
-- 目的: 1イベントの入力を安全な固定Discord requestへ変換する。
-- 将来変更対象: worker/src/index.mjs、提案新規worker/src/forum-posts.mjs、worker/src/discord-client.mjs、worker/tests/forum-posts.test.mjs、worker/tests/security.test.mjs、必要時package.json/package-lock.json。
-- 内容: 16KiB/読取期限/strict schema/正規化、固定forum/tag/Secret照合、Webhook wait=trueとallowed_mentions強制、receipt/error正規化。既存GET helperを必要な範囲だけGET/POST policy共通化。現在のmanual/3xx拒否と安全log分類を回帰維持。
-- 公開制御: adaptorはテストから呼ぶだけ。public POST経路は無効。将来POSTING_ENABLEDのdefault falseを使う案で、Secretなし/flag offは送信前停止。新Secretの値はmockだけで試験し本番登録しない。
-- テスト: body16KiB直前/直後・multi-byte・false Content-Length・read timeout・unknown/nested/duplicate field・Unicode/control、0/5/6タグ、別forum/ID、Secret URL偽装/query/userinfo/port、Webhook/parent mismatch、required/moderated、GETとPOSTの3xx、upstream400/401/403/404/429/5xx、receipt read timeout、秘密を含む例外/生bodyがlog/responseへ出ないこと。
-- 完了条件: adaptor単体/全既存試験がPASS。invalid requestと配置不一致で外部POSTゼロ。public routeから実書込を開始できない。
-- リスク: 既存GETの診断を壊す、Bot AuthorizationをWebhookへ誤添付、tokenを含むURLをlogへ記録。汎用任意URL clientにしない。
+- 目的: 固定forumへの正しいBot requestとreceipt/error変換を作り、入力/宛先/秘密を検証する。
+- 予定ファイル: worker/src/index.mjs、提案新規worker/src/forum-posts.mjs、worker/src/discord-client.mjs、
+  worker/tests/forum-posts.test.mjs、worker/tests/security.test.mjs。parser選択で必要な場合だけpackage/lock。
+- 内容: strict JSON/16KiB/read5秒/UTF-16/normalization、固定host/Origin/Bearer、タグ/親forum再取得、
+  Bot Authorization、name/message/applied_tags、parse=[]/replied_user=false、manual/3xx拒否、
+  fetch＋body全体10秒/response64KiB、type11/parent/guild/message receipt検証、安全なcode/ログ。
+- 権限: VIEW_CHANNEL/SEND_MESSAGES、必要時MANAGE_THREADS。moderated未確認は停止、GET tagsだけで許可しない。
+- 非公開Gate: transport adaptorをmock試験からだけ呼ぶ。public POSTから送信可能にしない。
+  Step 3のticket/永続state/rate統合前はproduction write経路なし。Bot APIへの実通信はしない。
+- テスト: 100/101・2000/2001 UTF-16、emoji/結合/ZWJ/CRLF/surrogate、16KiB境界/虚偽length/read timeout、
+  0/5/6タグ/重複/別forum/消滅/required/moderated、Host/Origin偽装、任意URL/Token/member拒否、
+  正常Bot request、400/401/403/404/429/5xx/3xx、不正receipt/body timeout、秘密を含む例外の非露出。
+- 完了: adaptor/全回帰PASS、invalid/preflight失敗でmock POSTゼロ、public writeは無効。現在のtag/auth GETに回帰なし。
+- リスク: POSTを先行公開、Bot adminを万能proxyの根拠にする、message.id欠落を推測補完、upstream401をuser session401へ混同。
 
-## Step 3: 永続二重防止・共有制限・状態API（公開統合Gate）
+## Step 3: DO永続状態・頻度制限（public write統合Gate）
 
-- 目的: 操作の重複配信と不明時の無条件再送を防止してから投稿APIを接続する。
-- 将来変更対象: worker/src/index.mjsのAuthState/ルーター、提案新規worker/src/post-state.mjs、worker/src/forum-posts.mjs、worker/tests/post-state.test.mjs、worker/tests/forum-posts.test.mjs、worker/tests/runtime.mjs、package.json。
-- 内容: 同じ既存DOへposts record/quota/cooldownを追加。stable Owner＋UUID、canonical hash、target snapshot、reserved lease、beginSend CAS、sending/receipt commit、tombstone保管、GET status、retry eligibility、読取/投稿quota。外部fetchはDO queue/transaction外。既存alarmに安全なpost清掃を追加。
-- API: Origin＋Bearerを全新経路へ、Idempotency-Key preflight追加。GET /api/sessionへ後方互換capabilitiesを追加し、新UIが旧WorkerへPOSTしないようにする案。tagsのconstraints/moderated/selectable追加。未有効時capabilities.forumPosts=false。
-- 保存互換: binding/class/object name/migrationを変えず、既存sessions/attemptsをそのまま利用。新しいnamespaceのkeysのみ。DO Migrationなしで進める案をruntimeで確認する。
-- テスト: 同キー同payload並行POSTが1write、異payload409、別session/再ログイン/別stubでも同record、reserved lease失効後の古いattempt拒否、sending永続化失敗でwriteゼロ、sending直後crashはunknown、Discord成功後receipt保存失敗はunknown、receipt commit後応答消失はreplay成功、5xx/timeout後同キー再POSTゼロ、遅い同attempt receipt回収、retired旧キー410、容量上限、quota/global/bucket/cooldownのエッジ共有、旧AuthState保存復元。
-- 完了条件: failure-injectionとSQLite workerdで保証境界がPASS。Step 2＋3が揃って初めてpublic POSTとstatusをfeature gate内で統合。flag off/Secretなしはfail closed。
-- リスク: 外部I/Oをtransactionに入れる、全authを10秒以上塞ぐ、期限切れsendingを未送信と誤分類、cleanupによるキー再受付、旧auth alarmの破壊。削除・無条件retryは禁止。
+- 目的: Step 2のadaptorを、永続化/競合防止/expiry/rateが通った後だけ公開APIへ接続する。
+- 予定ファイル: worker/src/index.mjsのAuthState/ルーター、提案worker/src/post-state.mjs、
+  forum-posts.mjs、worker/tests/post-state.test.mjs、forum-posts.test.mjs、worker/tests/runtime.mjs、必要時package scripts。
+- 内容: post-intents、not_started保存、UUID/ticket発行、HMAC domain分離、payload/target hash、
+  preparing lease/CAS、sending commit、receipt保存、GET、30日expiry/清掃、全利用者10件sliding window、
+  Discord bucket/global cooldown、明確な429のみsafe retry、過去key/missing record拒否。
+- 構成: 既存DO/key scope/migration維持。新posts/rate/cooldown namespace追加だけ。
+  外部networkをDO queue/transactionから外し、authを待たせない。alarmはauth清掃とpost期限を協調。
+- 公開: Step 2＋3の事故試験PASS後のみroutesを有効化。未統合はdisabled/fail closed。
+  GET /api/sessionに後方互換capabilities（forumPosts/version/ticket）を追加する。
+  tagsへconstraints/requireTag/moderated/selectableを追加、既存mapping保持。
+- テスト: 発行時保存失敗でticket/POSTなし、signature改変/期限/UUID・principal・hash不一致、
+  同key並行1write、global11並行10以下、session跨ぎ同record、旧attemptCAS拒否、
+  sending commit失敗でwriteゼロ、sending commit後crash→unknown、success後記録不能→unknown、
+  receipt commit後lost reply→replay成功、late同attemptreceipt、DO再作成、quota永続化失敗→write0、
+  60秒ちょうど境界、拒否/429/unknownの算入、replay/GET非算入、29日/30日境界、
+  record削除後ticket410、日時改変署名拒否、valid ticket記録消失503、expire120秒前dispatch停止、
+  清掃遅延時の失効、expired recordの再保存禁止、旧sessions/attempts復元。
+- 完了: mock failure-injection＋SQLite workerdでPASS。10件制限がsessionやエッジ分割で抜けない。
+- リスク: 30日後keyだけ受付し直す、session IDでscopeを分ける、ticketをBearer代用にする、
+  期限をpost retryで延長、保存未完了でfetch、counterをメモリーへfallback、auth alarmを上書き。
 
-## Step 4: フロントエンド統合（確認・見た目を維持）
+## Step 4: フロントエンド統合・Webhook直送撤去
 
-- 目的: 既存操作感を維持して宛先/秘密をブラウザから外す。
-- 将来変更対象: app.js、index.html、必要な範囲のstyles.css、tests-v010.js、tests-acceptance.cjs、tests/phase2-browser.cjs、提案新規tests/phase3-browser.cjs、README.md。
-- 内容: immutable snapshotを共通の正規化でpreview/POSTに利用。UUIDのfetch前保存、auth/capabilityチェック、1イベント1POSTの順次queue、dedicated Worker response adaptor、pending polling、401後のsame-key再照会、known retryable/failed/unknownのUI区別、成功guild/thread/messageリンク。
-- 移行制御: Worker経路の明示flag。旧Webhook直送へ自動fallbackしない。旧localStorage URLを読取/送信/自動移管しない。切替までの旧画面は手動選択の別版として扱い、1操作の両経路送信をしない。
-- テスト: preview＝POST文字列、UI二重click、複数event部分失敗、429wait、401再認証、新規キー自動発行なし、lost reply→GET成功、reload→同ID照会、storage unavailable停止、unknownからretry禁止、retired表示、API capabilityなしでwriteゼロ、XSS/mentions/log/URL非露出、PC/390/320px。
-- 完了条件: Worker対応UIがmock E2EでPASS。解析/タグ/手動根拠は回帰維持。ネットワークにブラウザ→Discord POSTなし。
-- リスク: 現workerApiの一律throwで状態を失う、preview後に入力を変え送る、disabled再描画でlockが外れる、Worker失敗時の旧直送が重複を生む。
-- 扱い: 古いtransport固有テストは無意味に全削除しない。移行中はlegacy回帰を残し、切替後は同じ安全性期待をWorker契約試験へ置換する。
+- 目的: 解析/previewを非認証で維持し、投稿だけBot対応Workerへ移す。
+- 予定ファイル: app.js/index.html、必要範囲styles.css、tests-v010.js/tests-acceptance.cjs、
+  tests/phase2-browser.cjs、提案tests/phase3-browser.cjs、README.md。
+- 内容: 正規化snapshotのpreview、投稿確認/login、ID変換、intent発行、UUID/ticket/期限のsessionStorage保存、
+  同payload POST、state adaptor、同ID GET/poll、reload/relogin、pending lock、expired/unknown/known failure表示、
+  guild/thread/messageリンク、意図的再投稿専用確認→新発行。
+- 撤去: Webhook URL入力/表示/remember/forget、localStorage保存/復元/参照、ブラウザDiscord POST、
+  webhook-check依存、旧failure-only直送retry。対象の旧保存キーだけ削除/案内し他データ不変更。
+- 互換: 入力/解析/手動タグ/根拠表示/プレビュー/順次queue/部分結果を維持。旧transport固有試験は
+  同等のWorker契約試験へ置換するが、安全性期待を消さない。Bot名義変更は合意済み。
+- テスト: 非認証解析/preview、投稿時login、入力→preview→POST一致、二重click/disabled再描画、
+  部分結果、401再login同ticket、429wait、lost reply→GET、reload sameID、
+  storage失敗でPOSTなし、unknown自動新keyなし、意図的確認新ID、expires410、
+  missing能力旧Workerにwriteなし、Token非露出、ブラウザDiscord POSTゼロ、PC/390/320px。
+- 完了: mock画面PASS、旧直送コードなし。Worker不通で編集/preview可、投稿停止。
+- リスク: API非2xx一律throw、login後タグ脱落を黙認、reload後UUID再発行、直送fallback。
+- 旧Webhook実体: このStepで削除しない。旧Pagesキャッシュの切替期間リスクを記録。
 
-## Step 5: セキュリティ・E2E受入（ローカルのみ）
+## Step 5: セキュリティ・ブラウザ・Worker E2E
 
-- 目的: 本番前に認証/共有状態/外部副作用境界を実ランタイムとブラウザで確認する。
-- 将来変更対象: worker/tests/*.mjs、tests/phase3-browser.cjs、tests/browser-acceptance.cjs、tests/pages-verify.cjs、package.json、受入文書（提案worker/PHASE3-ACCEPTANCE.md）。
-- 内容: workerd＋SQLite＋PBKDF2本番上限fixture、旧DO状態fixture、mock Discord/timeout/redirect/429/crash、ブラウザUIの全経路。request解析・quota・deadline・write countを観測する。
-- テスト: 現36件を含む全回帰、runtime、Phase 2/3 browser、負荷・同時request、Authorization/Secret/例外文/本文/hash非露出、固定target拒否、Origin偽装＋Bearerなし、logout/replay/期限、admin Botでも任意route拒否。テストは架空token。実Discord zero。
-- dry-run: 将来の検証用設定でbundled source/required namesを確認。本番Secretを読み込まず、deployはしない。
-- 完了条件: 全FAIL解消、実装API/error/stateと文書一致、未知障害は安全側。テストの対象がmock/runtime/実ブラウザのどれかを受入記録に明示。
-- リスク: Node/ローカルだけで本番制約も証明したと誤る、成功モックだけでunknownを証明する、テストdataがPagesに公開される。_config.ymlの公開除外を保全する。
+- 目的: 本番前にBot payload/認証/署名ticket/共有state/事故境界をまとめて検証。
+- 予定ファイル: worker/tests/*.mjs、tests/phase3-browser.cjs、browser-acceptance.cjs、pages-verify.cjs、
+  package scripts、提案worker/PHASE3-ACCEPTANCE.md。
+- 内容: workerd＋SQLite＋PBKDF2本番上限fixture、既存DO状態fixture、mock Discord、Clock/expiry/並行、
+  UI→intent→POST→status全経路。必要なbundle/dry-runを将来実施し、本番Secretを読まない。
+- テスト: 現36件/解析の安全性期待、Phase 2/新Bot UI、ticket30日signature、rate/sliding/全session共有、
+  redirects/mentions/型/上限/任意先拒否、Host/Origin/Bearer/失効/login上限、
+  result commit失敗/Worker再起動/timeout/parse、secret/body/hash/ticket/log非露出、post後deleteなし。
+- 完了: 全FAIL解消、API/error/stateと文書一致、mock/runtime/browserの証拠を区別。実Discord送信0。
+- リスク: ローカルテストだけで本番権限/CPUも証明したと誤る、unknownを成功mockだけで検証、
+  古いWebhook試験を削除してcoverageが落ちる、テストがPagesに公開される。
 
-## Step 6: 承認後の本番切替・旧経路撤去（別途外部操作の許可）
+## Step 6: 承認後の本番デプロイ・Bot受入・旧Webhook削除
 
-- 目的: 実際の固定forum/権限/投稿表示/CPUを確認し、旧ブラウザWebhookの認証迂回を閉じる。
-- 将来変更対象: worker/DEPLOYMENT.md、worker/PHASE3-ACCEPTANCE.md、承認後だけworker/wrangler.jsoncのrequired Secret名/feature var、app.js/index.html/README.md、tests、asset version。既存ローカル設定/backupはmergeで保持。
-- 承認事項: 追加Secret登録、既存Webhook採用/新規固定Webhook準備・旧Webhook失効、既存Workerデプロイ、指定イベント1件の実投稿。本番異常系の大量POSTは禁止。これらは今回未許可。
-- 手順: 既存Worker/5Secret/auth-v1/AUTH_STATE保全→管理者による固定投稿Secretの準備→flag offでdry-run/デプロイ→auth/readonly/capability確認→承認済み1件をflag onで投稿→タグ/表示/link/receipt回収/ログ非露出/CPU確認→Pages切替・cache更新→旧URL失効/保管キー削除案内→旧UIコードとwebhook-checkを撤去。
-- テスト: 許可した1件のguild/forum/thread/tag/Message receipt一致、same-key replayで新規スレッドなし、ブラウザにBot/Webhook秘密なし、成功リンク有効、auth/GET status継続。network crashは本番ではなくmock済みの証拠に依拠する。
-- 完了条件: Worker経由の本番受入、Pages配信一致、旧直接送信なし、旧URL失効/移行完了または残存例外をOwnerが記録、失敗時運用を確認。
-- リスク: 古いPagesが既存URLへ送る、old/new webhook混在、設定/権限不足、Secretローテーションで中途operationのtargetが変わる。旧UUIDでtarget変更後に再送しない。
-- rollback: 投稿受付flagをoff、status/read-onlyは維持。in-flight/unknown記録とAUTH_STATEは削除しない。外部送信済みを取り消せるとは言わない。旧直送へ自動rollbackしない。既存authは維持する。
-- 非対象: Phase 4重複探索、URL本文取得、AI判定、任意Discord proxy、Bot経由投稿の同時実装。
+- 目的: 固定forumとBot実権限/表示/receipt/CPUを確認してから旧Webhookを削除する。
+- 予定ファイル: worker/DEPLOYMENT.md、worker/PHASE3-ACCEPTANCE.md、app/index asset version、
+  README/契約撤去記録。必要な将来feature gateのみworker設定へ承認後反映、ローカルdiff/backup保持。
+- 前提: 既存5Secret/Worker/AUTH_STATE/auth-v1保全。追加Webhook Secretなし、署名鍵再生成なし、migrationなし。
+- 承認: 本番deploy、許可された1イベントの実投稿、旧Webhook削除の実行は別途ユーザー確認後。今回はどれも実行しない。
+- 手順: dry-run→ユーザー承認→既存Worker deploy→readonly/auth/capability確認→固定forumのBot有効権限確認→
+  承認済み1件をBot投稿→親/タグ/表示/receipt/link/同keyreplayとCPU確認→Pages配信/旧直送撤去確認→
+  ユーザー確認済み対象の旧Webhook削除→旧キー/古cacheの移行完了確認。
+- Webhook削除はBot API本番成功の後に行う。失敗なら削除せずBot経路を停止して原因調査。旧直送へfallbackしない。
+- テスト: 実1件とsame-keyreplayで新スレッドなし、Bot Token不露出、GET履歴、guild/forumタグ、リンク、
+  Phase 2継続。大量429/障害注入は本番ではなくmockの証拠を使う。
+- 完了: 本番Bot受入/Pages一致/旧Webhook削除が確認・記録済み。運用仕様が実装・UIに一致。
+- リスク: タグ読取だけで投稿権限を推定、削除対象取り違え、古いPages、実投稿後receipt欠落、CPU上限。
+- rollback: 新投稿受付を停止し状態照会/authを維持。unknown/rate/履歴を削除しない。30日期限は維持。
+  Discord投稿がなかったことにしない。旧Webhookの自動再作成/ブラウザ直送復活は禁止。
+- 非対象: Phase 4の内容/過去投稿重複検出、URL本文取得、AI、公開編集/削除API。
 
-## 事故注入の必須マトリクス（Step 3/5）
+## 依存・事故防止Gate
 
-|注入場所|期待記録/応答|追加write数|
+~~~text
+Step 1 契約確定
+  → Step 2 adaptor＋validation（public writeなし）
+  → Step 3 ticket＋state＋global rate（Step 2と統合して初めてpublic write）
+  → Step 4 UI＋旧直送撤去
+  → Step 5 統合受入
+  → Step 6 承認後deploy＋Bot実確認 → 旧Webhook削除
+~~~
+
+|事故/境界|期待|追加Discord write|
 |---|---|---|
-|auth/validation/GET preflight失敗|not_accepted、safeToRetry適切|0|
-|reserved保存失敗|503 not_accepted|0|
-|reserved期限切れ/古いattempt|CAS拒否、再予約は新attemptのみ|古いattempt 0|
-|sending commit直前障害|送信権限なし|0|
-|sending commit直後fetch前中断|復旧時unknown（未投稿でも安全側）|再送0|
-|POST後timeout/5xx/不正receipt|unknown|再送0|
-|Discord success→receipt保存失敗|sending→unknown|再送0|
-|receipt保存→browser応答消失|same-key GET/POST succeeded|新規0|
-|明確な429→cooldown中再要求|retryable/429|cooldown中0|
-|同キー同時要求|1attempt、他は202/replay|1|
-|同キー異payload|409|0|
-|session再発行/DO再作成|同記録回収|新規0|
-|詳細期限切れ/容量上限|410 / 503、旧キー新規化なし|0|
-|遅い正当receipt vs unknown|同attemptだけsucceededへ|新規0|
+|intent保存失敗/ブラウザstorage失敗|停止、未開始|0|
+|auth/Host/Origin/schema/タグ検証拒否|固定code、非作成|0|
+|preparing競合/古attempt|CAS拒否、pending表示|古attempt0|
+|sending/slot commit失敗|STATE_UNAVAILABLE|0|
+|commit後fetch前crash|unknownになり得る、再送禁止|retry0|
+|POST timeout/5xx/解析失敗|unknown、sameID照会|retry0|
+|Discord成功→receipt保存失敗|unknown/sending→照会|retry0|
+|receipt保存→返信消失|同ticket回収成功|新規0|
+|samekey並行|唯一のattempt、他replay/pending|1|
+|11異key並行/global複数session|10送信以下、1以上APP_RATE_LIMITED|最大10|
+|60秒/30日ちょうど|slot解放/410失効|期限外0|
+|30日削除後oldticket/日時改変|410/署名拒否、再作成なし|0|
+|valid ticketのrecord欠落|503、安全側停止|0|
+|意図的再投稿|確認→新UUID/ticket、quota遵守|明示操作1|
 
-## 今回の設計作業の完了条件
+## 今回の完了判定
 
-- [x] 1359bb4と最新origin/main一致を確認、tracked実装/設定/テスト/文書を調査
-- [x] 確認済み現行仕様と提案を分け、API/状態/Step Gateを作成
-- [x] Owner判断が必要な項目を明示
-- [x] Phase 4の内容重複探索と配信事故防止を分離
-- [x] Production code/設定/依存/テスト変更なし、ローカル設定/backup保持
-- [x] 文書のみcommit/push（SHAと結果は完了チャット）
-- [ ] Step 1の採用判断（Owner）
-- [ ] Phase 3実装・本番受入（将来、今回開始しない）
-
-完了チェックのうち非変更・pushは実際の差分/ハッシュ/remote確認後に確定する。
+Step 1はBot方式・ユーザー確定仕様・API/期限/rateが一致し、Step 2を開始できる設計として完了。
+未実装/未実測事項は本番権限、CPU、実通信・公開配信であり、次Stepのテスト/承認Gateに残す。
+commitは設計3文書/READMEのみ。実装は次のユーザー指示まで開始しない。

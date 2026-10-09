@@ -13,7 +13,7 @@ Webhook URLはユーザーが選択した場合だけ、この端末のlocalStor
 
 ## 開発
 
-Phase 3の調査・設計案は [設計概要](worker/docs/phase3/DESIGN.md)、[投稿API契約案](worker/docs/phase3/API-CONTRACT.md)、[段階的実装計画](worker/docs/phase3/IMPLEMENTATION-PLAN.md) を参照してください。基準はmainの1359bb4です。推奨方式・数値・APIは未確定で、Phase 3の実装にはまだ着手していません。
+Phase 3 Step 1はBot API方式で契約を確定しました。[設計概要](worker/docs/phase3/DESIGN.md)、[投稿API契約](worker/docs/phase3/API-CONTRACT.md)、[段階的実装計画](worker/docs/phase3/IMPLEMENTATION-PLAN.md) を参照してください。既存Bot Secret・固定forum、投稿時認証、全利用者10件/分、30日履歴、期限付き操作キー、結果不明の自動再送禁止を定義しています。これは設計の確定であり、現行のWebhook直送からの移行実装はまだ始めていません。
 
 v0.2.0 Phase 2は既存Workerによる個人用認証とフォーラムタグ取得を追加します。ログイン→タグ一覧取得後、イベントに最大5タグを選択できます。タグ付き投稿前にWebhookが取得元フォーラムに属するか照合します。タグなし投稿はWorkerが利用できなくても従来どおり使えます。自動判定は編集済みタイトル・説明を対象にボタン押下時だけ実行します。Phase 1のイベント5件打ち切りは仕様との不一致のため撤去し、最大5タグ制限に修正しました。
 

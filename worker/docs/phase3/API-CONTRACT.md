@@ -1,126 +1,129 @@
-# Phase 3 投稿API契約案 v1（未確定・未実装）
+# Phase 3 Step 1 — Bot投稿API契約 v1（確定・未実装）
 
-基準コード: 1359bb4。採否は [DESIGN.md](DESIGN.md) §11、実装Gateは [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)。
-この契約は現在のWorkerが提供しているAPIではない。1操作＝1イベント＝1スレッド。
-数値は推奨初期値。transportはサーバー設定で固定し公開しない。
+対象main: ff63a4a。ユーザー確定仕様を [DESIGN.md](DESIGN.md) に記録。
+ここで「確定」は次Stepの実装契約であり現在の公開APIではない。1操作＝1イベント＝1スレッド。
+認証/Origin/固定先を維持し、新投稿経路に明示Host検証を加える。期限付き操作キーで30日後の再送を防ぐ。
 
-## 1. エンドポイント
+## 1. 公開API
 
-|method/path|用途|条件|
+|method/path|目的|認証/キー|
 |---|---|---|
-|POST /api/forum/posts|新規操作の受付、または同キーの結果回収/安全な再試行|Origin＋Bearer＋Idempotency-Key|
-|GET /api/forum/posts/{operationId}|再読込/通信断後の状態照会|Origin＋Bearer|
-|OPTIONS 同経路|preflight|Origin一致、GET/POST、許可headerだけ|
+|POST /api/forum/post-intents|未開始操作を永続化しUUID/署名ticket発行。Discord投稿なし|Origin/Host＋Bearer|
+|POST /api/forum/posts|同操作の初回送信/安全なretry/結果回収|Origin/Host＋Bearer＋Idempotency-Key(ticket)|
+|GET /api/forum/posts/{operationId}|再読込後の照会|Origin/Host＋Bearer＋同ticket|
+|OPTIONS|preflight|固定Origin/Host、許可method/headerのみ|
 
-baseは既存Worker。任意path/target/queryは拒否。
-login/session/logout/tagsは維持。webhook-checkは旧UI撤去後に廃止候補。
-GETのIDとPOSTのキーは同じUUID。batch API、任意channel、任意Webhook、添付、編集/削除APIは今回の案に含めない。
+操作キー発行API追加は30日保存＋古いキー拒否を満たす技術上の確定仕様。UUIDだけの受付方式は撤回する。
+Idempotency-KeyはUUIDではなく署名ticket。operationIdはticket内のUUIDで、GET pathと一致必須。
+既存login/session/logout/tagsは維持。解析/プレビューにはlogin不要。投稿の発行/送信/照会は保護する。
+任意route/query、投稿先ID/URL/Token、batch、編集削除、旧Webhookへのproxyは受付しない。
 
-## 2. リクエスト
-
-~~~http
-POST /api/forum/posts
-Origin: <登録済みPages origin>
-Authorization: Bearer <既存セッション>
-Content-Type: application/json
-Idempotency-Key: 123e4567-e89b-42d3-a456-426614174000
-~~~
+## 2. payload（操作発行と投稿で同じJSON）
 
 ~~~json
 {
   "apiVersion": 1,
   "threadName": "【東京】イベントタイトル",
-  "content": "📍 **開催地域：東京**\n\n📅 **開催期間：2026/10/23〜2026/11/29**\n\nイベント説明\n\n🔗 **公式サイト**\nhttps://example.com/\n\n#謎解き",
+  "content": "📍 **開催地域：東京**\n\n📅 **開催期間：2026/10/23〜2026/11/29**\n\nイベント説明\n\nhttps://example.com/\n\n#謎解き",
   "tagIds": ["100000000000000001"]
 }
 ~~~
 
-例のUUID/ID/本文は架空。Bearer/Secret値は文書へ記載しない。
-
-|項目|必須|検証/正規化|
+|field|必須|契約|
 |---|---|---|
-|Idempotency-Key|yes|UUID v4のcanonical lowercase、36文字。暗号学的乱数で1操作に1回生成。別sessionでも同じOwner scope|
-|apiVersion|yes|整数1のみ|
-|threadName|yes|string、CRLF→LF後、前後trim。UTF-16 code unitsで1〜100。改行、NUL、禁止control、孤立surrogate拒否|
-|content|yes|string、CRLF→LF統一。空白だけ不可。UTF-16 code unitsで1〜2000、trimで本文の空白を勝手に変更しない。NUL、孤立surrogate、tab/LF以外のcontrol拒否|
-|tagIds|no|省略は[]。array<string>、0〜5、重複拒否、数字のみ1〜20桁・非zero・64bit範囲。サーバーの固定forumで再検証|
+|apiVersion|yes|整数1|
+|threadName|yes|string、改行統一後trim、1〜100 UTF-16 code units、改行/禁止control/孤立surrogate不可|
+|content|yes|string、CRLF/CR→LF、空白だけ不可、1〜2000 UTF-16 code units、本文の前後空白は変更しない|
+|tagIds|no|省略=[]。array<string>、0〜5、重複なし、nonzero64bit decimal snowflake、8名称に対応する固定forumのID|
 
-ブラウザは最終snapshotでthreadName/contentを作る。Workerは地域・日付を再推定しない。
-入力フォームの公式URL検証は継続するが、投稿APIではURLはcontent中の文字列にすぎない。Workerは取得も宛先解決もしない。
-本文のMarkdown、通常URL、ハッシュタグを許可。メンション通知はサーバー側で止める。HTMLとしてUIへ挿入しない。
+原子化/署名hash前に、全API/ブラウザで同じ正規化を使う。NFC変換なし、UUID/名前を推測生成しない。
+contentのtab/LFを許可し、他C0/DEL controlと孤立surrogateを拒否。titleはtab/LFも拒否。
+JSON root object、未知field/重複member/過深構造/null/型違いを拒否。escaped member名も復号して重複判定。
+許可外: operationId, issuedAt, expiresAt, channelId, forumId, guildId, botToken, webhookUrl, discordUrl, actor, transport, allowed_mentions, embeds, files, attachments, flags, nonce, enforce_nonce。
+strict parserの技術選択はStep 2で行うが、重複member400等の契約は未決にしない。
 
-request bodyは16,384 UTF-8バイト。Content-Length値だけに依存せずstreamで制限、読取5秒、Content-Encoding圧縮受付なし。
-JSON rootはobject、field allowlistのみ。tagIds以外のarray/object、null、数値代入、過深nestingを拒否。
-重複JSON memberは400。名前のescapeを復号した上で同じmemberを検出できるparserをStep 2の技術選択として用意する。単なるJSON.parseだけで重複拒否を実装したと扱わない。
-無効UTF-8はfatal decodeで400。本文サイズは413、読取期限408、Content-Type違い415。
-現smallJsonの4KiBを無条件に全APIへ拡張しない。login/webhook-checkの既存制限を維持し、新投稿parserに16KiBを指定する。
+### 上限と文字数
 
-禁止field例: webhookUrl, discordUrl, forumId, channelId, guildId, token, transport, allowed_mentions, username, avatar_url, embeds, files, attachments, tts, flags, thread_id, nonce, enforce_nonce。
-クライアント指定requestId/actor/priority/adminも受付しない。
+公式はname100/content2000 characters、forum request全体25MiB。これは添付等を含む上流の上限。
+本APIはJSON16,384 UTF-8バイト、読取5秒、非圧縮application/jsonだけ。Content-Lengthを偽装してもstreamで超過検知。
+UTF-8 fatal decode、max depth3（root＋tagIds）、許可field4件、重複member拒否。header Idempotency-Key最大1024 ASCIIバイト。
+文字数は既存JS lengthと同じUTF-16。BMPの日本語は1、絵文字のsurrogate pairは2、結合/ZWJは各要素を数える。
+公式は内部の文字数単位を明記していないため、本アプリの保守的な受付単位として確定。Discord内部と同一とは断定しない。
+ブラウザとWorkerで100/101、2000/2001、emoji50/51組、CRLF、結合文字、surrogateを境界試験する。
+未知fieldやJSONエラーは400、超過413、Content-Type/Content-Encoding不適合415、read timeout408、意味検証422。
 
-## 3. 固定タグ/投稿先の検証
+## 3. 操作発行と署名キー
 
-毎外部POST attempt前に認証済みWorkerが以下を確認する。UIが取得したmappingは認証・権限証明ではない。
-
-1. env.DISCORD_FORUM_CHANNEL_IDを数字として検証、Bot GETのid/type15/guild_idを確認。
-2. available_tagsから8名称の完全一致を作り、欠落/重複名/不正IDを検出。
-3. 選択IDがこの一対一対応に属することを確認。その他タグ・他forum・消滅ID・同ID複数名称は拒否。
-4. 選択していない名称の欠落があっても、有効な選択の投稿は可能。選択名の重複・対応不明は拒否。
-5. REQUIRE_TAGのforumでは[]を422。moderatedタグは実投稿資格確認済みのものだけ許可。未確認なら拒否。
-6. 固定Webhook Secretのendpointを正規化し、GET-with-tokenのtype/id/channel_id/guild_idを固定forumと照合。
-7. attempt予約時のdestination fingerprintと現在の固定先が変わっていればretryを409で止める。
-
-GET tagsへconstraints:{maxTags:5, requireTag:boolean}、tagsのmoderated/selectableを追加する案。
-id/name/mapping/missing/duplicates/unknownは互換維持。制約APIが返らない旧Workerでは書込開始せずcapability不足表示。
-タグ取得失敗時にタグを黙って外してPOSTしない。POSTはGET検証を共有し、一時的なDiscord GET失敗は送信前503（safeToRetry=true）。
-
-## 4. Discord payload/receipt変換
-
-### 推奨Webhook
-
-宛先はSecretから構成したdiscord.comの固定v10 webhook endpointに、サーバーだけがwait=trueを追加。
-Secret入力は/api/webhooksと/api/v10/webhooksだけ許可しv10へ正規化。legacyホストや別API版を自動許可しない。
-thread_idは設定しない。Bot Authorizationは付けない。
+POST /api/forum/post-intentsはpayloadのschema/正規化、固定forum設定、sessionを検証する。DOが以下を発行してnot_startedをcommitする。
+Bot投稿はゼロ。受付時のタグlive確認をしても投稿権限の証明とはしない。タグの最終live確認は送信attempt前。
 
 ~~~json
 {
-  "thread_name": "<検証済みthreadName>",
-  "content": "<検証済みcontent>",
-  "applied_tags": ["<固定forumの検証済みID>"],
-  "allowed_mentions": { "parse": [] }
+  "apiVersion": 1,
+  "operationId": "123e4567-e89b-42d3-a456-426614174000",
+  "idempotencyKey": "v1.<base64url-claims>.<hex-HMAC-SHA256>",
+  "issuedAt": "2026-10-09T00:00:00.000Z",
+  "expiresAt": "2026-11-08T00:00:00.000Z",
+  "payloadHash": "<SHA256>",
+  "status": "not_started"
 }
 ~~~
 
-ゼロタグはapplied_tagsを省略または[]で統一（canonical hashは[]）。初期案は[]。
-responseのid→messageId、channel_id→threadId、GET forumのguild_id→guildId。forumIdはenv由来。
-IDsを数字/範囲で検証しguild_idが存在する場合は固定guildとの一致を確認。receipt欠落/解析不能はunknown。
-replayでは保存receiptのguild/forum/targetを使い、現在のenv値で過去のリンクを書き換えない。
-成功リンクは固定https://discord.com/channels/{guildId}/{threadId}/{messageId}を組み立てる。任意応答URLを返さない。
+架空の例。初回発行201。保存不可503 STATE_UNAVAILABLE、keyを返さずDiscord送信なし。
+UUID v4はサーバー乱数。claimsの固定schema:
+v=1, operationId, principal=personal-owner-v1, forumId（env由来）, payloadHash, issuedAt/expiresAt（整数ms）。
+expiresAt=issuedAt+30*24*60*60*1000。hashはUTF-8の固定順JSON配列[1, threadName, content, sorted tagIds]のSHA256。
+signatureはSESSION_SIGNING_KEYのHMAC-SHA256、入力はUTF-8の "forum-post-operation:v1."+base64url(claims)。
+canonical encoding、正確なclaims key/type/値/期間を検証、signatureはcrypto.subtle.verify、domainをsessionと分ける。
+SESSION_SIGNING_KEY、APP_PASSWORD_HASH、Bot Tokenは変更/追加しない。署名の値・ticketはログに出さない。
 
-### 代替Bot（採用判断が必要）
+発行は履歴の保存を先にawaitしてからticket返却。ticket単体ではBearer認証の代わりにならない。
+発行応答が失われた場合、その未開始操作はDiscordへ送られていない。ユーザーが確認したsnapshotの発行をやり直すことは可能。
+一度POSTを開始したら、自動的に発行をやり直すことは禁止。same-key照会で回復する。
+意図的再投稿だけ新しい発行要求を確認画面から行う。発行に既存UUID/日時を受け取らせない。
 
-固定POST /api/v10/channels/{env forumId}/threadsへ次を変換。
+## 4. Botへの変換と投稿先/権限
+
+POST先:
+https://discord.com/api/v10/channels/{env.DISCORD_FORUM_CHANNEL_ID}/threads
+Authorization: Bot <既存DISCORD_BOT_TOKEN>。クライアントに渡さない。Webhook Secretなし、wait queryなし。
 
 ~~~json
 {
   "name": "<threadName>",
-  "applied_tags": ["<ID>"],
   "message": {
     "content": "<content>",
-    "allowed_mentions": { "parse": [] }
-  }
+    "allowed_mentions": { "parse": [], "replied_user": false }
+  },
+  "applied_tags": ["<検証済みtagId>"]
 }
 ~~~
 
-Channel.id→threadId、nested message.id→messageId。表示はBot名義へ変わる。
-message APIのnonce/enforce_nonceをここに追加しない（forum作成契約に同じ保証はない）。
-成功receiptを保存する必要とunknown方針は同じ。
+type/auto_archive_duration/rate_limit_per_user/username/avatar/添付を任意指定させない。省略はDiscordの既定値。
+固定forum GETからid/type15/guild_id/available_tags/flagsを確認。毎attemptで8名称の一対一mappingにselected IDsが属するか確認。
+IDの消滅/他forum/重複/その他名称、selected名称の重複を422 TAG_INVALID。REQUIRE_TAGなのに[]は422 TAG_REQUIRED。
+moderatedタグはMANAGE_THREADS必要。使用許可はサーバー側の有効権限確認で判定し、確認不能はTAG_PERMISSION_UNVERIFIEDで停止する。クライアントのselectable値/申告やGET tags成功から許可しない。権限計算に必要な追加読取は固定parentから得たguild/Botに限定し、公開proxyにはしない。
+VIEW_CHANNEL/SEND_MESSAGES、必要時MANAGE_THREADSの有効権限はStep 6の受入事項。CREATE_PUBLIC_THREADSを前提にしない。
+Administratorでも呼べるrouteは固定。PATCH/DELETEや任意Discord routeは公開しない。
 
-仕様根拠: [Webhook](https://docs.discord.com/developers/resources/webhook)、[Channel](https://docs.discord.com/developers/resources/channel)。
-外部fetchはmanual、3xx拒否、fetch＋応答本文読取全体で10秒deadline。response.jsonだけ無制限に待たない。
-成功応答の読取サイズも64KiB上限案。超過/timeoutは送信後unknown。既存GETの応答サイズ改善は投稿に必要な対象から段階的に行う。
+### 応答receipt
 
-## 5. 共通レスポンス
+Discordの成功は妥当な2xx＋Channel/nested message。アプリの201とは分けて扱う。
+Channel.type=11、parent_id=固定forum、guild_id=GET親forumのguild、Channel.idが有効snowflake、
+message.id/message.channel_idが有効、message.channel_id=Channel.idを確認。
+threadId=Channel.id、messageId=message.id、guildId/forumIdは検証済み親とreceiptから保存。
+初期message/thread同IDの仕様は参考にするが、欠落message.idをlast_message_id等で補完して成功扱いしない。
+リンク: https://discord.com/channels/{guildId}/{threadId}/{messageId} をサーバー生成。threadUrlはmessageIdを省略した同固定hostのリンク。
+replayは保存receiptの元guild/forumを使用。現在envで過去リンクを書き換えない。
+不正JSON/receipt不足/IDやparent不一致/2xx本文timeoutはunknown。第三者URLやDiscord生bodyを返さない。
+
+manual＋全3xx拒否。POST/応答本文全体で10秒deadline、本文64KiB上限。Locationへfollowしない。
+read-only preflightの失敗は未作成。write開始後の3xx/5xx/network/timeoutはunknown。
+Botが作成後に編集/削除できる仕様はDESIGN §3参照。アプリは公開編集削除APIを追加せず、失敗補償のdeleteも行わない。
+
+## 5. 投稿と状態照会のレスポンス
+
+POSTはBearer＋Idempotency-Keyを要求する。GET path UUIDもticketと一致必須。
 
 ~~~json
 {
@@ -130,6 +133,7 @@ message APIのnonce/enforce_nonceをここに追加しない（forum作成契約
   "status": "succeeded",
   "replayed": false,
   "attempt": 1,
+  "expiresAt": "2026-11-08T00:00:00.000Z",
   "safeToRetry": false,
   "retryAfterSeconds": null,
   "error": null,
@@ -137,126 +141,111 @@ message APIのnonce/enforce_nonceをここに追加しない（forum作成契約
     "guildId": "100000000000000002",
     "forumId": "100000000000000003",
     "threadId": "100000000000000004",
-    "messageId": "100000000000000005",
-    "url": "https://discord.com/channels/100000000000000002/100000000000000004/100000000000000005"
+    "messageId": "100000000000000004",
+    "threadUrl": "https://discord.com/channels/100000000000000002/100000000000000004",
+    "url": "https://discord.com/channels/100000000000000002/100000000000000004/100000000000000004"
   }
 }
 ~~~
 
-status: not_accepted / reserved / sending / succeeded / retryable / failed / unknown / retired。
-not_acceptedは保存前のレスポンス状態でDOのpost状態ではない。
-operationIdは検証/権限失敗でnull可。requestIdはサーバー生成、秘密の操作キーをログIDに使わない。
-replayedはこの要求による新しい外部POSTなしで保存結果を返した場合true。attemptはDiscord write attempt数、受付前0。
-safeToRetryは「同じキー・同じpayloadで新規attemptを始めても二重作成にならない」という限定の意味。GET照会可否ではない。
-pending/unknown/succeeded/retiredでfalse。retryableはnextAllowedAt後だけ。not_acceptedの非作成が確定した場合true（入力修正/再認証の要否はerror code）。
-failedは終端false。入力を修正して新規操作を始めるかは別のOwner操作。unknownで新キーを自動生成しない。
+errorは固定code/message/fieldsのみ。fieldsはfield名、値のechoなし。
+safeToRetryは同ticket/同payloadで新しいDiscord attemptを始めてよい意味。GET照会可否ではない。
+unknown/sending/succeeded/failed/expiredはfalse。not_started/retryableは期限/nextAllowedAt以内の許可条件を満たす場合true。
+replayed=trueはこの要求で新Discord writeなし、保存状態の返却。attemptはbeginSend commit回数。発行直後0。
+レスポンスなし（ブラウザtimeout等）からunknownと断定せず、まず同ID/ticketでGETする。
 
-error object例:
-
-~~~json
-{
-  "code": "OUTCOME_UNKNOWN",
-  "message": "投稿された可能性があります。Discordで確認してください。",
-  "fields": []
-}
-~~~
-
-fieldsは固定allowlistのfield名のみ。値、Secret、生Discord body、例外messageは返さない。
-unknownはresult:null、safeToRetry:false。retryableはerror.code=RATE_LIMITED、retryAfterSeconds正値。
-HTTPステータスだけで送信済みか判定しない。ブラウザの接続失敗にはこのJSONすらないのでGETで照会する。
-
-## 6. HTTPステータス/状態
-
-|HTTP|条件|状態/送信可能性|
+|state|画面|再送/遷移|
 |---|---|---|
-|201|新attempt成功＋receipt永続化済み|succeeded、再送禁止|
-|200|同キー成功replay、またはGET既存操作|保存状態、外部POSTなし|
-|202|同キーがreserved/sendingで進行中|safeToRetry=false、GET案内|
-|400|構文/未知field/不正UUID/無効UTF-8|not_accepted、非作成|
-|401|sessionなし/期限切れ/失効|新attemptなし。既存進行操作の有無は漏らさない|
-|403|Origin不一致/Owner権限なし|新attemptなし|
-|404|GET操作不存在/未知route|同キー同payloadで再受付可。先行POSTのpreflightが進行中の可能性はある|
-|405|新経路のmethod不一致|Allow header。旧APIの404契約は別|
-|408|本文読取5秒timeout|not_accepted、非作成|
-|409|KEY_PAYLOAD_CONFLICT / DESTINATION_CHANGED|キーを別内容/別投稿先の新規操作に使わない|
-|410|詳細期限切れtombstone|retired、旧キー再受付不可|
-|413 / 415|16KiB超過/Content-Type・encoding不適合|not_accepted、非作成|
-|422|文字数/タグ/required/moderated/投稿先配置不一致|送信前not_accepted、固定field error|
-|429|アプリ頻度、または明確なDiscord429|not_accepted またはretryable、共有wait|
-|502|Discord送信拒否/receipt不正|failed またはunknown、error code必須|
-|503|設定/DO/上流GET障害、送信後中断|not_accepted またはunknown、必ず区別|
+|not_accepted|受付拒否（HTTP用、履歴stateではない）|この要求のwriteなし。既存操作の有無はticketとGETで確認|
+|not_started|未開始|有効ticket/同payloadでpreparingへ|
+|preparing|送信準備中|15秒attempt lease、他要求202。古いattemptはCAS拒否|
+|sending|送信中|beginSend永続化済み。他要求202、追加write禁止|
+|succeeded|成功|receipt保存、再送不可、保存結果を返す|
+|retryable|安全に再試行可能な失敗|非作成確定。wait後same-keyのみ|
+|failed|確定した拒否/終端失敗|自動再送不可。修正/再投稿は確認画面＋新ID|
+|unknown|投稿結果不明|same-ID照会だけ。自動retry/新key生成なし|
+|expired|履歴期限切れ|410、追加write不可。新操作は意図的確認必須|
 
-GET sending/reservedはHTTP200＋stateで返す（202はPOST再要求）。
-認証403はCORS許可headerを返さず、通常レスポンスはno-store/Vary:Origin/X-Content-Type-Options。
-POST202/429はRetry-Afterを返し、Locationは相対status APIのみ。CORS expose headersはRetry-After/Location、追加案。
-APIが停止/DBが読めない時のGET503を404や非作成証明として扱わない。
-同キーterminal failedは保存されたcode/HTTP分類を再返却し、新規外部POSTなし。
+preparing→sending commitをawaitしてからfetch。準備lease切れは古いattemptを無効にした後retryableへ戻せる。
+sendingが120秒超ならunknown。期限切れを再送許可にしない。
+同attemptの遅い妥当receiptだけunknown→succeeded可。成功を失敗で上書きしない。
+failed/retryableも30日でexpire。unknown履歴も30日以降削除するが、古いticketは永久に再送不可（署名expiryによる拒否）。
 
-### Discord非成功分類
+## 6. HTTP/error code
 
-|上流結果|投稿状態|処理|
+|HTTP|条件/code|結果|
 |---|---|---|
-|400/401/403/404の明確な拒否|failed|invalid payload / posting credential / permission / destination unavailableの固定code。Bot401とユーザーsession401を混同しない|
-|完全に受信した429|retryable|非作成。wait記録後に同キー再試行可|
-|3xx|unknown（write経路）|転送しない。3xxだけで外部副作用なしを保証しない。GET preflightの3xxは非作成|
-|5xx/network/timeout/connection reset|unknown|POSTが成功した可能性。自動再送なし|
-|2xxだがid/channel_id欠落、invalid JSON、read timeout|unknown|receipt検証失敗、204も成功扱いしない|
-|成功後DOへの保存失敗|unknown、または記録上sending|GETで残状態確認。新attempt禁止|
+|201|intent発行 / 新attempt成功|not_started ticket / succeeded receiptをcommit後返す|
+|200|GET状態 / success replay|現在保存state、外部writeなし|
+|202|POST中のpreparing/sending replay|safeToRetry=false、Retry-After:2でGET案内|
+|400|INVALID_REQUEST / INVALID_OPERATION_KEY|未知field、JSON/Unicode、署名/claims不正|
+|401|SESSION_REQUIRED / SESSION_EXPIRED|新attemptなし、再ログイン|
+|403|ORIGIN_REJECTED / HOST_REJECTED|writeなし。上流Bot403と混同しない|
+|404|ROUTE_NOT_FOUND|未知routeだけ。missing履歴を未開始とみなさない|
+|405|METHOD_NOT_ALLOWED|新経路Allow header、旧APIとは分離|
+|408/413/415|BODY_TIMEOUT / BODY_TOO_LARGE / UNSUPPORTED_MEDIA|parse段階、新writeなし|
+|409|KEY_PAYLOAD_CONFLICT / TARGET_CHANGED / OPERATION_EXPIRING|同key別内容/別先、期限まで120秒未満で新attempt禁止|
+|410|OPERATION_EXPIRED|署名キーの30日期限以降、DO削除済みでもwrite禁止|
+|422|CONTENT_INVALID / TAG_INVALID / TAG_REQUIRED / TAG_PERMISSION_UNVERIFIED|送信前検証失敗|
+|429|APP_RATE_LIMITED / DISCORD_RATE_LIMITED|異なるcodeとwait。操作はretryable/準備前|
+|502|DISCORD_REQUEST_REJECTED / DISCORD_CREDENTIAL_REJECTED / DISCORD_PERMISSION_DENIED / DISCORD_TARGET_UNAVAILABLE|上流400/401/403/404の明確な拒否→failed|
+|502|OUTCOME_UNKNOWN|送信後3xx/5xx/timeout/network/解析失敗、safeToRetry=false|
+|503|STATE_UNAVAILABLE / SERVICE_UNAVAILABLE|送信前DO/GET障害は停止。送信後記録不能ならOUTCOME_UNKNOWN/sendingとして照会|
 
-## 7. Idempotency処理手順
+有効署名ticketなのに履歴なし:503 STATE_UNAVAILABLE。新recordにしない。期限外はDB lookup前に410。
+schema失敗でoperationId=null可。認証失敗では保存状態を返さない。HTTPだけで成功/失敗/不明を判断しない。
+responseはno-store/Vary:Origin/X-Content-Type-Options。Origin拒否にはallow-originを出さない。
+preflight許可headers: Authorization,Content-Type,Idempotency-Key。Expose: Retry-After,Location。Locationは自APIの相対status pathのみ。
 
-GET404は先行POSTが今後受付する可能性を消す証明ではなく、同キー同payloadの安全な再受付だけを許す。
+上流429は完全なHTTP429として受信した場合のみ非作成確定。body parse失敗でもstatus429の拒否を記録し、自動retryは停止する。
+上流401はBot資格情報の失敗。ユーザーsessionを無効化するAPI401に変換しない。403/404も自動retryしない。
+5xx/networkでは「明確に未投稿だった」と推測しない。receipt保存後返信が消えた場合はGETでsucceededを回収。
 
-1. Origin、session、header/body、サイズ、schemaを検証。固定Ownerをserverから取得。
-2. 同キー記録を先に照会。同hash terminalはreplay、pendingは202、unknownはunknown返却、異hash409。失敗やexpired記録を未送信へ戻さない。
-3. 初回/許可retryだけ、fixed forum・Webhook・タグをGET検証。
-4. AUTH_STATEのtransaction内で同キー記録/hash/stateを再読し、先行requestが既に予約/送信中なら新規挿入しない。quota/cooldown/capacity/sessionを再確認し、未受付または許可retryだけreservedを保存、attempt leaseを発行する。手順2の読取だけで排他を済ませたと扱わない。
-5. beginSendのCASが成功しsending commit済みであることをawait。期限/古いattemptを拒否し、その場合fetchしない。
-6. 外側Workerが1回だけ外部POST。重いnetworkをDO promise queue内に置かない。
-7. 同attemptのみ結果を記録。receipt commitをawaitして201。失敗persist/応答不能は結果不明に寄せる。
-8. browserは同キーを保存。lost responseはGETで回収。Worker statusが不明なら新キー/直送fallbackしない。
+## 7. transactionと30日expiry
 
-payloadHashは固定順JSONのSHA256、tagIdsはsort。本文は上記正規化済み文字列。
-target fingerprint（forumId、transport、webhookId）は別管理。Webhook token/署名鍵をhash入力へ含めず、tokenを消したfingerprintだけ保管する。
-記録scopeは固定Owner＋UUIDで、session再発行でも同じrecord。方式変更時にscopeを変えて旧UUIDを新規扱いしない。
+1. Host/Origin/Bearer、ticket署名/schema/期限、body正規化/hashを検証。UUID/principal/targetはticket/サーバー由来。
+2. DOで履歴を読取。same payload終端はreplay、異payload409、missing有効ticket503、pending202、unknownは再送禁止。
+3. eligible操作のみ固定parentとタグlive GET。権限/配置拒否を記録。クライアントのcached mappingは権限証明ではない。
+4. transactionで同record/state/attemptを再読しpreparingをCAS予約（15秒）。外部GET/fetchをtransaction内に置かない。
+5. beginSend transactionでsession/expiry/target/hash/cooldownとglobal60秒rateを再確認。sending＋slot＋attemptをcommit/await。
+6. 外側Workerが1回だけBot POST。beginSend応答を失ったら勝手に再許可を取得せずGETで確認。
+7. same attemptのresultをexpiry以内にcommit/awaitして返信。commit不能/再起動後sendingはunknown、外部write再試行なし。
+8. expiresAt以降POST/GET410。alarmとrequest時清掃で履歴を削除。清掃が遅れても公開しない、30日更新延長なし。
 
-並行初回、reservation expiry、sending前crash、送信後crash、receipt commit前後のcrash、複数session、DO再作成を必須試験にする。
-詳細30日、tombstone期限なし、10,000キー停止案。削除後の古いキー再送を許すTTL設計は別途承認/契約変更。
-tombstoneはhash/stateを維持し、同キー異payloadには409、same payloadには410。unknownは自動retireしない。
+30日は発行時刻起点の論理期限。通常は最早期限のalarmで物理削除し、platform障害で清掃が遅れた場合は回復時に削除する。障害中にも期限外の読取/書込は許可せず、厳密なリアルタイム物理削除を保証したとは扱わない。
+GETは保存された発行時targetの結果を照会できる。POSTの新attemptだけ現在の固定forumとticket/recordのtarget一致を要求する。target変更を理由に同IDで新スレッドを作らない。
 
-## 8. 429/投稿頻度案
+署名鍵交換、DBデータ消失、target変更で既存keyを新規化しない。操作を発行し直すには新しい確認画面が必要。
+1時間session expiryで履歴を消さず、同Ownerの再ログインで同keyを照会できる。
+新規signature発行は新UUIDだけ。過去UUID/claimsを新期限で再署名するpublic APIなし。
+署名期限は保管されたrecordなしで検証できるため無期限tombstone不要。strict exactly-onceなし、安全側unknownの可能性あり。
 
-dispatch quota: Owner/固定forumの10回/10分、POST間隔2秒。各外部write attemptを数える（429拒否も含む）。
-POSTの同キーreplay、GET statusはdispatch枠を消費せず読取枠を消費。
-読取quota: authenticated Owner 60回/分、同一pendingのpollは2秒から最大10秒にbackoff。
-tags/照合GETのrate情報も共有。ただし上流Bot tokenとWebhook tokenのglobal/bucketを混同しない。現在のBot利用が本アプリ外にもあるならAPI429を最終権威とする。
+## 8. 全利用者10件／60秒・Discord429
 
-完全に受信したDiscord429はRetry-After/retry_after/X-RateLimit-Reset-Afterの有効値から最大wait（秒、finite positive）＋小さいjitterを採用。
-globalフラグ・bucket/scopeからcooldownを共有保存。過大waitを60秒へ切り縮めない。
-有効wait欠落/JSON不正なら自動retry停止。非作成はHTTP429から判別できるので、固定の保守的なcooldownを置きmanual待機（初期案60秒）とする。Owner承認の数値。
-同キーattemptは初回＋3retry最大4。wait60秒以下でもWorkerをsleepさせず429を返してUIが待機。60秒超もnextAllowedAtは正しく保存し、manual再開案内。
-429以外の不明な通信失敗をこの再試行ループに入れない。
-アプリquotaとDiscord quotaは別。アプリ10/10分はDiscord制限の代用ではない。
+既存DOのapp-wide posts:rateに最大10個のbeginSend timestampを保存。session/利用者/forumごとに分割しない。
+window(t)={slot | t-60000 < slot <= t}。tはDOのserver time。時計後退時は保存したlastRateNowとの最大値を使い、quotaを早期解放しない。10なら新attempt429 APP_RATE_LIMITED。
+Retry-After=ceil((oldest+60000-t)/1000)、最低1。同じnowの11並行要求で許可10、拒否1。
+slot挿入、state CAS、attemptCount増加は同transaction。永続化成功前のfetchなし。
+POST拒否/Discord429/unknownも1slot。commit後fetch前crashもslot返却なし。安全側に上限を数える。
+not_started発行/GET/replay/pending再要求はslotなし。safe retryで新fetchを始める場合は1slot追加。
+DO不通/書込失敗は503で閉じる。ローカルcounterやquota無視の経路なし。
 
-## 9. 現UIとの対応・移行
+Discordのbucket/globalは同BotのGET/POST間で共有する。Botを他アプリでも使う場合、その使用量は本DOでは把握できず上流429を最終権威とする。
+Retry-After/retry_after/Reset-Afterのfinite positive値の最大wait＋小jitter。global/bucket scopeとnextAllowedAtをDOへ記録。
+上流waitを60秒へ切り縮めない。waitが取れない429は保守的60秒cooldown＋manual retryのみ。malformed waitで0秒連打しない。
+same-key自動retryは明確な429と有効waitの場合だけ、初回＋3retryの最大4attempt。Worker内sleepなし、UIがwait後同ticketで再要求。
+投稿後timeout/5xxをこのloopへ入れない。APP_RATE_LIMITEDで外部write未開始ならattemptCountは増加しない。
+GET/pending pollは2秒から10秒へbackoff。read/intent濫用対策は別制限/監視とし、10件の投稿quotaに混ぜない。投稿budgetを操作発行時に消費したことにしない。
 
-contentFor/threadName/previewはそのまま最終文字列生成に使う。解析rawや判定根拠をAPIへ送らない。
-selectedTags→tagIdsの表示mappingは維持、サーバーで再検証。対応消失時にタグなしへ変換しない。
-postOneをWorker専用adaptorへ。今のworkerApiの非2xx一律throwを使うとunknown/retryable/failedを失うため直接再利用しない。
-queue順次・lock・confirmは維持。操作IDをfetch前にsessionStorageへ保存し、再読込では本文なしでGET。
-非認証タグなし投稿、直送fallback、成功receiptの@meリンクは最終cutoverで変更する提案。
-旧URLのlocalStorage保存/入力削除は別Step。旧Secret/URLの移管・失効は自動で行わない。
+## 9. UI/本番境界
 
-## 10. 未確定項目
+confirm→login（必要時）→tags ID確定→snapshot確認→intent発行→sessionStorage保存→POST。
+storage/履歴永続化失敗はDiscord送信前停止。beforeunload/通信断で新intentへfallbackしない。
+reloadはoperationId＋ticketでGET、期限切れ410表示。同一内容の再投稿は確認画面で新発行、unknownは手動確認先行。
+Webhook入力/保存/参照/直送はStep 4撤去。旧Webhook削除はStep 6のBot実投稿確認後。TokenをUIへ送らない。
 
-方式、追加Secret/旧Webhook失効、全投稿auth必須、quota、保管/tombstone上限、storage不可時停止、moderated資格、intentional repostをStep 1で確定する。
-重複JSON member拒否parser、result polling/capabilityの実装配置は実装担当の技術選択。契約の曖昧さとしてOwnerへ委ねない。
-エラー/状態はこの案を基準にテストを先行し、productionへ仮APIを追加してから決めない。
-
-## 参照
-
-- [Rate limits](https://docs.discord.com/developers/topics/rate-limits)
-- [Webhook](https://docs.discord.com/developers/resources/webhook)
-- [Forum thread](https://docs.discord.com/developers/resources/channel)
-- [Message nonce](https://docs.discord.com/developers/resources/message)
-- [DO storage transaction](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)
+[公式Forum仕様](https://docs.discord.com/developers/resources/channel) /
+[権限/編集削除](https://docs.discord.com/developers/topics/threads) /
+[mentions](https://docs.discord.com/developers/resources/message) /
+[rate](https://docs.discord.com/developers/topics/rate-limits)。
+署名操作・30日・10件/分・UTF-16/16KiBは本アプリ契約でありDiscord公式が定めたものではない。
