@@ -67,7 +67,7 @@ function diagnostic(stage,error,status) {
 }
 async function auth(env,payload) { const stub=env.AUTH_STATE.get(env.AUTH_STATE.idFromName('personal-auth-v1'));return stub.fetch(new Request('https://internal/auth',{method:'POST',body:JSON.stringify(payload)})); }
 async function discord(env,path) {
-  const response=await fetch('https://discord.com/api/v10/'+path,{headers:{Authorization:'Bot '+env.DISCORD_BOT_TOKEN},redirect:'error',signal:AbortSignal.timeout(10000)});
+  const response=await fetch('https://discord.com/api/v10/'+path,{headers:{Authorization:'Bot '+env.DISCORD_BOT_TOKEN},redirect:'manual',signal:AbortSignal.timeout(10000)});
   return response;
 }
 async function diagnosticFetch(url,headers,redirectMode='manual',timeoutMode='controller') {
@@ -133,7 +133,8 @@ export default {
           stage='discord_fetch';
           const discordResponse=await discord(env,'channels/'+env.DISCORD_FORUM_CHANNEL_ID);
           stage='discord_response';
-          if(!discordResponse.ok){diagnostic(stage,null,discordResponse.status);response=json({error:'Discordフォーラムを取得できませんでした。'},502);}
+          if(discordResponse.status>=300&&discordResponse.status<400){diagnostic(stage,null,discordResponse.status);response=json({error:'Discordフォーラムを取得できませんでした。'},502);}
+          else if(!discordResponse.ok){diagnostic(stage,null,discordResponse.status);response=json({error:'Discordフォーラムを取得できませんでした。'},502);}
           else {
             stage='discord_json_parse';
             const channel=await discordResponse.json();
@@ -154,7 +155,8 @@ export default {
             stage='discord_fetch';
             const discordResponse=await discord(env,'channels/'+env.DISCORD_FORUM_CHANNEL_ID+'/webhooks');
             stage='discord_response';
-            if(!discordResponse.ok){diagnostic(stage,null,discordResponse.status);response=json({error:'Webhookの所属確認に失敗しました。'},502);}
+            if(discordResponse.status>=300&&discordResponse.status<400){diagnostic(stage,null,discordResponse.status);response=json({error:'Webhookの所属確認に失敗しました。'},502);}
+            else if(!discordResponse.ok){diagnostic(stage,null,discordResponse.status);response=json({error:'Webhookの所属確認に失敗しました。'},502);}
             else {
               stage='discord_json_parse';
               const hooks=await discordResponse.json();

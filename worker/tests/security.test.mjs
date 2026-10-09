@@ -80,3 +80,11 @@ test('diagnostic classifies redirects, fetch failures, explicit timeout and acce
   globalThis.fetch=async()=>Response.json({});const next=await h.login();assert.equal((await h.call('/api/diagnostics/discord','POST',null,next.token)).status,429);
  } finally { globalThis.setTimeout=realSetTimeout;globalThis.clearTimeout=realClearTimeout;globalThis.fetch=realFetch;console.log=realLog;Date.now=realNow; }
 });
+test('normal forum fetch rejects every redirect without following or forwarding the token',async()=>{
+ const statuses=[301,302,307,308];
+ for(const status of statuses){
+  const h=await setup(),s=await h.login(),calls=[],realFetch=globalThis.fetch,realError=console.error,logs=[];console.error=(...args)=>logs.push(args.join(' '));
+  try { globalThis.fetch=async(url,opts)=>{calls.push({url,opts});return new Response(null,{status,headers:{Location:'https://secret.invalid/target'}});};const r=await h.call('/api/forum/tags','GET',null,s.token);assert.equal(r.status,502);assert.equal(calls.length,1);assert.equal(calls[0].opts.redirect,'manual');assert.equal(calls[0].opts.headers.Authorization,'Bot TEST_ONLY_BOT');assert.deepEqual(JSON.parse(logs.at(-1)),{event:'request_failed',stage:'discord_response',errorName:'Error',status}); }
+  finally { globalThis.fetch=realFetch;console.error=realError; }
+ }
+});
