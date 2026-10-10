@@ -12,6 +12,15 @@ const fixture=()=>({
 });
 const reader=f=>async resource=>{if(!Object.hasOwn(f,resource))throw new Error('UNEXPECTED_READ');return structuredClone(f[resource]);};
 const metadata=()=>({compatibility_date:'2026-04-01',bindings:[...deploy.SECRET_NAMES.map(name=>({name,type:'inherit'})),{name:'FORUM_POSTS_ENABLED',type:'plain_text',text:'false'},{name:'AUTH_STATE',type:'durable_object_namespace',class_name:'AuthState'}],keep_bindings:['plain_text','json','secret_text','secret_key']});
+test('comparison removes undefined assets only from cloned local config and refuses real changes',()=>{
+ const {source}=candidate.original(),patched=deploy.patchProduction(source),line='  if (normalizedLocalConfig.assets === void 0) delete normalizedLocalConfig.assets;';assert.equal(patched.split(line).length,2);
+ const expose='\ninit_config_diffs();exports.audit=getRemoteConfigDiff;';const after=candidate.load(patched,deploy.BRIDGE+expose),before=candidate.load(patched.replace(line,''),deploy.BRIDGE+expose);for(const api of [before,after])api.stage1Install(deploy.hooks({}, {dryRun:true}));
+ const local={assets:undefined,observability:{enabled:false}},remote={};const old=before.audit(remote,local);assert.equal(Object.hasOwn(old.diff,'assets__added'),true);assert.equal(old.diff.assets__added,undefined);assert.equal(old.nonDestructive,false);assert.equal(after.audit(remote,local).diff,null);assert.equal(Object.hasOwn(local,'assets'),true);
+ const configured={assets:{binding:'ASSETS',directory:'TEST_ONLY'},observability:{enabled:false}};const saved=structuredClone(configured);assert.equal(after.audit({},configured).nonDestructive,false);assert.deepEqual(configured,saved);
+ for(const field of ['unknown_setting','secrets','migrations','durable_objects']){const l={...local,[field]:field==='durable_objects'?{bindings:[{name:'AUTH_STATE',class_name:'OTHER'}]}:{changed:true}},r={...remote,[field]:field==='durable_objects'?{bindings:[{name:'AUTH_STATE',class_name:'AuthState'}]}:{changed:false}};assert.equal(after.audit(r,l).nonDestructive,false);}
+ assert.equal(deploy.allowedDiff({}),false);assert.equal(deploy.allowedDiff({assets__added:undefined,unknown__added:undefined}),false);
+ const builder=s=>s.slice(s.indexOf('function createWorkerUploadForm('),s.indexOf('var init_create_worker_upload_form ='));assert.equal(builder(patched),builder(patched.replace(line,'')));
+});
 test('only completely absent observability uses Wrangler disabled defaults with identity guards intact',async()=>{
  const f=fixture();delete f[service+'/environments/production'].script.observability;const before=structuredClone(f);await deploy.snapshot(async p=>f[p],ACCOUNT);assert.deepEqual(f,before);
  const {source}=candidate.original(),api=candidate.load(source,'\ninit_config_diffs();exports.normalize=normalizeObservability;');const normalized=api.normalize(undefined);assert.equal(normalized.enabled,false);assert.equal(normalized.logs.enabled,false);assert.equal(normalized.traces.enabled,false);

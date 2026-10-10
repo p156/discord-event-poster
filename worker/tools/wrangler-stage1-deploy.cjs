@@ -135,6 +135,9 @@ async function snapshot(read,accountId){
 function patchProduction(source){
  let output=candidate.patch(source);
  const replace=(oldText,newText)=>{if(output.split(oldText).length!==2)fail('PATCH_ANCHOR_MISMATCH');output=output.replace(oldText,newText);};
+ // normalizeLocalResolvedConfigAsRemote creates a structuredClone: remove only
+ // its absent assets placeholder before comparison, never the upload config.
+ replace('  const normalizedLocalConfig = normalizeLocalResolvedConfigAsRemote(localResolvedConfig);','  const normalizedLocalConfig = normalizeLocalResolvedConfigAsRemote(localResolvedConfig);\n  if (normalizedLocalConfig.assets === void 0) delete normalizedLocalConfig.assets;');
  replace('    nonDestructive: isNonDestructive(diff)\n  };\n}\nfunction normalizeLocalResolvedConfigAsRemote','    nonDestructive: __stage1AllowedDiff(diff)\n  };\n}\nfunction normalizeLocalResolvedConfigAsRemote');
  replace('async function preUploadApiChecks(props, config2) {','async function preUploadApiChecks(props, config2) {\n  if (!props.dryRun) await __stage1Preflight(props, config2);');
  replace('  return migrations;\n}\nasync function resolveDoLifecyclePayload','  __stage1NoMigration(migrations);\n  return migrations;\n}\nasync function resolveDoLifecyclePayload');
