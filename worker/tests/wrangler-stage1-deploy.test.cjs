@@ -12,6 +12,98 @@ const fixture=()=>({
 });
 const reader=f=>async resource=>{if(!Object.hasOwn(f,resource))throw new Error('UNEXPECTED_READ');return structuredClone(f[resource]);};
 const metadata=()=>({compatibility_date:'2026-04-01',bindings:[...deploy.SECRET_NAMES.map(name=>({name,type:'inherit'})),{name:'FORUM_POSTS_ENABLED',type:'plain_text',text:'false'},{name:'AUTH_STATE',type:'durable_object_namespace',class_name:'AuthState'}],keep_bindings:['plain_text','json','secret_text','secret_key']});
+test('only completely absent observability uses Wrangler disabled defaults with identity guards intact',async()=>{
+ const f=fixture();delete f[service+'/environments/production'].script.observability;const before=structuredClone(f);await deploy.snapshot(async p=>f[p],ACCOUNT);assert.deepEqual(f,before);
+ const {source}=candidate.original(),api=candidate.load(source,'\ninit_config_diffs();exports.normalize=normalizeObservability;');const normalized=api.normalize(undefined);assert.equal(normalized.enabled,false);assert.equal(normalized.logs.enabled,false);assert.equal(normalized.traces.enabled,false);
+ for(const value of [undefined,null,{}, {logs:{enabled:true}},{traces:{enabled:true}},{enabled:true},{enabled:false,logs:{enabled:true}},{enabled:false,traces:{enabled:true}},{enabled:false,unknown_setting:false},false,[]]){const bad=structuredClone(f);bad[service+'/environments/production'].script.observability=value;await assert.rejects(()=>deploy.snapshot(reader(bad),ACCOUNT));}
+ for(const alter of [x=>x[script+'/versions'].items[0].id='OTHER',x=>x[script+'/deployments'].deployments[0].versions[0].version_id='OTHER',x=>x[script+'/deployments'].deployments[0].versions[0].percentage=99,x=>x[service+'/environments/production/bindings'].at(-1).namespace_id='OTHER',x=>x[service+'/environments/production'].script.migration_tag='OTHER',x=>x[service+'/environments/production/bindings'][0].name='OTHER',x=>x[service+'/environments/production'].script.unknown_setting=false]){const bad=structuredClone(f);alter(bad);await assert.rejects(()=>deploy.snapshot(reader(bad),ACCOUNT));}
+});
+test('observability parent and fixed child shape diagnostics never change refusal or expose values',async()=>{
+ for(const parent of [undefined,null,{}, {logs:{enabled:true},traces:{enabled:true}},{enabled:undefined,logs:{},traces:{}},{enabled:true,logs:'DO_NOT_PRINT',traces:[]},{unknown_setting:'DO_NOT_PRINT'},false,[]]){
+  const f=fixture();const runtime=f[service+'/environments/production'].script;runtime.observability=parent;
+  const before=structuredClone(f);await assert.rejects(()=>deploy.snapshot(reader(f),ACCOUNT),error=>{
+   assert.equal(error.message,'STAGE1_OBSERVABILITY_UNVERIFIED');const first=error.diagnostics[0];assert.deepEqual(first,{location:'environment.script',field:'observability',present:true,type:parent===null?'null':Array.isArray(parent)?'array':typeof parent,reason:parent===null||Array.isArray(parent)||typeof parent!=='object'?'unexpected_type':'type_only'});
+   for(const d of [error.diagnostic,...error.diagnostics])assert.deepEqual(Object.keys(d).sort(),['field','location','present','reason','type']);const output=JSON.stringify(error.diagnostics);assert.ok(!output.includes('DO_NOT_PRINT'));assert.ok(!output.includes('unknown_setting'));assert.ok(!output.includes(ACCOUNT));
+   if(parent?.logs&&typeof parent.logs==='object'&&!Array.isArray(parent.logs)){const d=error.diagnostics.find(x=>x.location==='environment.script.observability.logs');assert.equal(d.present,Object.hasOwn(parent.logs,'enabled'));assert.equal(d.type,typeof parent.logs.enabled);}
+   return true;
+  });assert.deepEqual(f,before);
+ }
+ for(const obs of [{enabled:false,logs:{enabled:true}},{enabled:false,traces:{enabled:true}},{enabled:false,unknown_setting:false}]){const f=fixture();f[service+'/environments/production'].script.observability=obs;await assert.rejects(()=>deploy.snapshot(reader(f),ACCOUNT));}
+});
+test('observability enabled diagnostics preserve strict false condition and expose no values',async()=>{
+ for(const parent of [undefined,null,{},[], 'DO_NOT_PRINT',{enabled:undefined},{enabled:null},{enabled:0},{enabled:'DO_NOT_PRINT'},{enabled:[]},{enabled:{secret:'DO_NOT_PRINT'}},{enabled:true},{enabled:false}]){
+  const f=fixture();f[service+'/environments/production'].script.observability=parent;const before=structuredClone(f),value=parent?.enabled;
+  if(value===false){await deploy.snapshot(reader(f),ACCOUNT);continue;}
+  await assert.rejects(()=>deploy.snapshot(reader(f),ACCOUNT),error=>{
+   const present=parent!=null&&Object.hasOwn(Object(parent),'enabled');assert.equal(error.message,'STAGE1_OBSERVABILITY_UNVERIFIED');assert.deepEqual(error.diagnostic,{location:'environment.script.observability',field:'enabled',present,type:value===null?'null':Array.isArray(value)?'array':typeof value,reason:!present?'missing_field':typeof value!=='boolean'?'expected_boolean':'expected_disabled'});
+   const output=JSON.stringify(error.diagnostic);assert.ok(!output.includes('DO_NOT_PRINT'));assert.ok(!output.includes(ACCOUNT));assert.ok(!Object.hasOwn(error.diagnostic,'value'));return true;
+  });assert.deepEqual(f,before);
+ }
+ const unknown=fixture();unknown[service+'/environments/production'].script.observability={enabled:false,unknown_setting:false};await assert.rejects(()=>deploy.snapshot(reader(unknown),ACCOUNT),/UNKNOWN_REMOTE_SETTINGS/);
+});
+test('null tail_consumers is unset only for this field, without mutation or bypassing identity checks',async()=>{
+ const f=fixture();f[service+'/environments/production'].script.tail_consumers=null;const before=structuredClone(f);await deploy.snapshot(async p=>f[p],ACCOUNT);assert.deepEqual(f,before);
+ for(const value of [[{service:'DO_NOT_PRINT'}],{},false,0,'', 'null']){const bad=structuredClone(f);bad[service+'/environments/production'].script.tail_consumers=value;await assert.rejects(()=>deploy.snapshot(reader(bad),ACCOUNT),/REMOTE_SETTINGS_MISMATCH/);}
+ for(const key of ['streaming_tail_consumers','compatibility_flags','tags']){const bad=structuredClone(f);bad[service+'/environments/production'].script[key]=null;await assert.rejects(()=>deploy.snapshot(reader(bad),ACCOUNT),/REMOTE_SETTINGS_MISMATCH/);}
+ for(const alter of [x=>x[script+'/versions'].items[0].id='OTHER',x=>x[script+'/deployments'].deployments[0].versions[0].percentage=99,x=>x[service+'/environments/production/bindings'].at(-1).namespace_id='OTHER',x=>x[service+'/environments/production'].script.migration_tag='OTHER',x=>x[service+'/environments/production/bindings'][0].name='OTHER',x=>x[service+'/environments/production'].script.unknown_setting=null]){const bad=structuredClone(f);alter(bad);await assert.rejects(()=>deploy.snapshot(reader(bad),ACCOUNT));}
+ const {source}=candidate.original(),api=candidate.load(source,'\ninit_construct_wrangler_config();exports.construct=constructWranglerConfig;');const config=api.construct({name:'MOCK',entrypoint:'index.mjs',bindings:[],routes:[],domains:[],subdomain:{enabled:true,previews_enabled:false},schedules:[],tail_consumers:null});assert.equal(config.tail_consumers,undefined);
+});
+test('remote settings mismatch diagnostics preserve array checks and never expose contents',async()=>{
+ for(const field of ['compatibility_flags','tail_consumers','streaming_tail_consumers','tags']){
+  for(const value of [undefined,[],null,false,'DO_NOT_PRINT',{},['DO_NOT_PRINT']]){
+   const f=fixture();f[service+'/environments/production'].script[field]=value;
+   if(value===undefined||(field==='tail_consumers'&&value===null)||Array.isArray(value)&&value.length===0){await deploy.snapshot(reader(f),ACCOUNT);continue;}
+   await assert.rejects(()=>deploy.snapshot(reader(f),ACCOUNT),error=>{assert.equal(error.message,'STAGE1_REMOTE_SETTINGS_MISMATCH');assert.deepEqual(error.diagnostic,{location:'environment.script',field,type:value===null?'null':Array.isArray(value)?'array':typeof value,reason:Array.isArray(value)?'expected_empty_array':'expected_array'});assert.ok(!JSON.stringify(error.diagnostic).includes('DO_NOT_PRINT'));assert.ok(!JSON.stringify(error.diagnostic).includes(ACCOUNT));return true;});
+  }
+ }
+});
+test('default settings diagnostics preserve object and exact-default rejection including upload path',async()=>{
+ for(const field of ['limits','placement'])for(const value of [null,false,'DO_NOT_PRINT',[],{}]){const f=fixture();f[service+'/environments/production'].script[field]=value;if(value&&typeof value==='object'&&!Array.isArray(value)){await deploy.snapshot(reader(f),ACCOUNT);continue;}await assert.rejects(()=>deploy.snapshot(reader(f),ACCOUNT),error=>{assert.equal(error.message,'STAGE1_REMOTE_SETTINGS_MISMATCH');assert.equal(error.diagnostic.location,'environment.script');assert.equal(error.diagnostic.field,field);assert.equal(error.diagnostic.reason,'expected_object');return true;});}
+ for(const [field,value,reason,location]of [['logs',null,'expected_object','environment.script.observability'],['traces',[],'expected_object','environment.script.observability'],['head_sampling_rate',0.5,'expected_default','environment.script.observability'],['redact_query_string',true,'expected_default','environment.script.observability']]){const f=fixture();f[service+'/environments/production'].script.observability[field]=value;await assert.rejects(()=>deploy.snapshot(reader(f),ACCOUNT),error=>{assert.equal(error.message,'STAGE1_REMOTE_SETTINGS_MISMATCH');assert.equal(error.diagnostic.location,location);assert.equal(error.diagnostic.field,field);assert.equal(error.diagnostic.reason,reason);return true;});}
+ const f=fixture();f[service+'/environments/production'].script.observability.logs={enabled:false,persist:false};await assert.rejects(()=>deploy.snapshot(reader(f),ACCOUNT),error=>{assert.equal(error.diagnostic.location,'environment.script.observability.logs');assert.equal(error.diagnostic.field,'persist');return true;});
+ const m=metadata();m.observability={enabled:true};assert.throws(()=>deploy.assertUpload(m),error=>{assert.deepEqual(error.diagnostic,{location:'upload.metadata.observability',field:'enabled',type:'boolean',reason:'expected_default'});return true;});
+});
+test('empty auxiliary deployment_id is preserved and cannot bypass authoritative deployment checks',async()=>{
+ const f=fixture();f[service+'/environments/production'].script.deployment_id='';const before=structuredClone(f);
+ const result=await deploy.snapshot(async p=>f[p],ACCOUNT);assert.equal(result.deploymentId,'DEPLOYMENT');assert.deepEqual(f,before);assert.equal(f[service+'/environments/production'].script.deployment_id,'');
+ for(const alter of [x=>x[script+'/versions'].items[0].id='OTHER',x=>x[script+'/deployments'].deployments[0].versions[0].version_id='OTHER',x=>x[script+'/deployments'].deployments[0].versions[0].percentage=99,x=>x[script+'/deployments'].deployments[0].id='',x=>x[service+'/environments/production'].script.unknown_setting=false]){const bad=structuredClone(f);alter(bad);await assert.rejects(()=>deploy.snapshot(reader(bad),ACCOUNT));}
+ let reads=0;await assert.rejects(()=>deploy.snapshot(async p=>{const v=await reader(f)(p);if(p===script+'/deployments'&&++reads===2)v.deployments[0].id='CHANGED';return v;},ACCOUNT),/CONCURRENT_DEPLOYMENT/);
+ const {source}=candidate.original(),api=candidate.load(source,'\nexports.parseLegacyId=parseNonHyphenedUuid;');assert.equal(api.parseLegacyId(''),null);
+});
+test('invalid script deployment metadata diagnostics distinguish type and blank strings without values',async()=>{
+ for(const [value,type,reason]of [[null,'null','expected_nonblank_string'],[undefined,'undefined','expected_nonblank_string'],[false,'boolean','expected_nonblank_string'],[0,'number','expected_nonblank_string'],[{secret:'DO_NOT_PRINT'},'object','expected_nonblank_string'],[['DO_NOT_PRINT'],'array','expected_nonblank_string'],[' \t\n','string','blank_string']]){
+  const f=fixture();f[service+'/environments/production'].script.deployment_id=value;
+  await assert.rejects(()=>deploy.snapshot(reader(f),ACCOUNT),error=>{assert.equal(error.message,'STAGE1_SCRIPT_DEPLOYMENT_METADATA_INVALID');assert.deepEqual(error.diagnostic,{location:'environment.script',field:'deployment_id',type,reason});assert.ok(!JSON.stringify(error.diagnostic).includes('DO_NOT_PRINT'));return true;});
+ }
+});
+test('has_modules permits absence or strict true only for the fixed ES Modules Worker',async()=>{
+ const config=deploy.localConfig();assert.equal(config.main,'src/index.mjs');const entry=fs.readFileSync(path.resolve(__dirname,'../src/index.mjs'),'utf8');assert.match(entry,/^import /m);assert.match(entry,/^export default /m);
+ const f=fixture();await deploy.snapshot(reader(f),ACCOUNT);const runtime=f[service+'/environments/production'].script;runtime.has_modules=true;runtime.has_assets=false;runtime.deployment_id='LEGACY_VERSION_METADATA';await deploy.snapshot(reader(f),ACCOUNT);
+ for(const value of [false,null,undefined,0,1,'true','false',{},[],new Boolean(true)]){const bad=structuredClone(f);bad[service+'/environments/production'].script.has_modules=value;await assert.rejects(()=>deploy.snapshot(reader(bad),ACCOUNT),/SCRIPT_MODULES_MISMATCH/);}
+ const unknown=structuredClone(f);unknown[service+'/environments/production'].script.unknown_module_metadata=true;await assert.rejects(()=>deploy.snapshot(reader(unknown),ACCOUNT),/UNKNOWN_REMOTE_SETTINGS/);
+ const assets=structuredClone(f);assets[service+'/environments/production'].script.has_assets=true;await assert.rejects(()=>deploy.snapshot(reader(assets),ACCOUNT),/SCRIPT_ASSETS_MISMATCH/);
+ const invalidId=structuredClone(f);invalidId[service+'/environments/production'].script.deployment_id=null;await assert.rejects(()=>deploy.snapshot(reader(invalidId),ACCOUNT),/SCRIPT_DEPLOYMENT_METADATA_INVALID/);
+ const upload=metadata();upload.has_modules=true;assert.throws(()=>deploy.assertUpload(upload),/UNKNOWN_UPLOAD_SETTINGS/);
+});
+test('has_assets permits absence or strict false only and preserves all other guards',async()=>{
+ const config=deploy.localConfig();assert.equal(Object.hasOwn(config,'assets'),false);assert.equal(Object.hasOwn(config,'site'),false);assert.ok(!deploy.cliArgs(false).includes('--assets'));
+ const f=fixture();await deploy.snapshot(reader(f),ACCOUNT);f[service+'/environments/production'].script.has_assets=false;f[service+'/environments/production'].script.deployment_id='LEGACY_VERSION_METADATA';await deploy.snapshot(reader(f),ACCOUNT);
+ for(const value of [true,null,undefined,0,1,'false','true',{},[],new Boolean(false)]){const bad=fixture();bad[service+'/environments/production'].script.has_assets=value;await assert.rejects(()=>deploy.snapshot(reader(bad),ACCOUNT),/SCRIPT_ASSETS_MISMATCH/);}
+ f[service+'/environments/production'].script.unknown_assets_metadata=false;await assert.rejects(()=>deploy.snapshot(reader(f),ACCOUNT),/UNKNOWN_REMOTE_SETTINGS/);
+ const upload=metadata();upload.has_assets=false;assert.throws(()=>deploy.assertUpload(upload),/UNKNOWN_UPLOAD_SETTINGS/);
+});
+test('legacy script deployment_id accepts string metadata only, without conflating active deployment ID',async()=>{
+ const f=fixture();f[service+'/environments/production'].script.deployment_id='LEGACY_VERSION_METADATA';
+ const before=structuredClone(f);assert.equal((await deploy.snapshot(reader(f),ACCOUNT)).deploymentId,'DEPLOYMENT');assert.deepEqual(f,before);
+ for(const value of [null,undefined,0,false,{},[],new String('id'),'   ']){const bad=fixture();bad[service+'/environments/production'].script.deployment_id=value;await assert.rejects(()=>deploy.snapshot(reader(bad),ACCOUNT),/SCRIPT_DEPLOYMENT_METADATA_INVALID/);}
+ f[service+'/environments/production'].script.another_metadata='DO_NOT_PRINT';await assert.rejects(()=>deploy.snapshot(reader(f),ACCOUNT),/UNKNOWN_REMOTE_SETTINGS/);
+ const changed=fixture();changed[service+'/environments/production'].script.deployment_id='LEGACY_VERSION_METADATA';changed[script+'/deployments'].deployments[0].versions[0].version_id='OTHER';await assert.rejects(()=>deploy.snapshot(reader(changed),ACCOUNT),/ACTIVE_DEPLOYMENT_CHANGED/);
+ const upload=metadata();upload.deployment_id='LEGACY_VERSION_METADATA';assert.throws(()=>deploy.assertUpload(upload),/UNKNOWN_UPLOAD_SETTINGS/);
+});
+test('unknown remote diagnostics expose only schema location, field, type and reason',async()=>{
+ const cases=[['top',s=>s.unknown_field='DO_NOT_PRINT','environment.script','unknown_field','string','not_allowlisted'],['nested',s=>s.observability.logs={unknown_field:{secret:'DO_NOT_PRINT'}},'environment.script.observability.logs','unknown_field','object','not_allowlisted'],['limits',s=>s.limits={cpu_ms:123},'environment.script.limits','cpu_ms','number','not_allowlisted'],['placement',s=>s.placement={mode:'DO_NOT_PRINT'},'environment.script.placement','mode','string','not_allowlisted'],['known unsupported',s=>s.exports=[],'environment.script','exports','array','expected_absent_or_false'],['unsafe key',s=>s['https://private.invalid/token']='DO_NOT_PRINT','environment.script','[redacted-key]','string','not_allowlisted']];
+ for(const [,alter,location,field,type,reason]of cases){const f=fixture();alter(f[service+'/environments/production'].script);await assert.rejects(()=>deploy.snapshot(reader(f),ACCOUNT),error=>{assert.equal(error.message,'STAGE1_UNKNOWN_REMOTE_SETTINGS');assert.deepEqual(error.diagnostic,{location,field,type,reason});assert.ok(!JSON.stringify(error.diagnostic).includes('DO_NOT_PRINT'));return true;});}
+});
 test('command defaults refuse execution; only explicit future approval and pinned version accepted',()=>{assert.deepEqual(deploy.parse(['--dry-run']),{dryRun:true});const execute=['--execute','--account-id',ACCOUNT,'--expected-version',deploy.VERSION,'--approval','STAGE1-POSTS-OFF'];assert.equal(deploy.parse(execute).accountId,ACCOUNT);for(const args of [[],['deploy'],['--execute'],['--dry-run','--strict=false'],execute.map(x=>x===deploy.VERSION?'other':x),[...execute,'--secrets-file','test'],[...execute,'--execute']])assert.throws(()=>deploy.parse(args));});
 test('fixed local config and mandatory CLI options preserve validation-only candidate',()=>{deploy.localConfig();const args=deploy.cliArgs(false);for(const value of ['--strict','--keep-vars','FORUM_POSTS_ENABLED:false'])assert.ok(args.includes(value));assert.equal(candidate.sha(fs.readFileSync(path.resolve(__dirname,'../tools/wrangler-strict-candidate.cjs'))),'9f3be8a818f7bafce7d4220399d492f6487a110750db7bdaba98a37c9940dd5a');});
 test('GET-only snapshot checks account, latest/active version, namespace/backend, tag and all settings',async()=>{const f=fixture(),seen=[];const snapshot=await deploy.snapshot(async p=>{seen.push(p);return reader(f)(p);},ACCOUNT);assert.equal(snapshot.namespaceId,deploy.NAMESPACE);assert.ok(seen.every(p=>p===root||p.startsWith(root+'/')));assert.ok(!seen.some(p=>/\/secrets(?:\/|$)|\/namespaces\/[^/?]+\/objects/.test(p)));});

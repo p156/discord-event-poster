@@ -7,10 +7,22 @@ const SECRET_NAMES=['ALLOWED_ORIGIN','DISCORD_BOT_TOKEN','DISCORD_FORUM_CHANNEL_
 const CONFIG_SHA='d4d5326b330b36950fd47320e246e46c9a9a27626055614053a77445b620505f';
 class Stage1Error extends Error {}
 const fail=code=>{throw new Stage1Error('STAGE1_'+code);};
+// Diagnostics contain schema names and types only; never values or response bodies.
+function unknownSetting(location,key,value,reason='not_allowlisted'){
+ const error=new Stage1Error('STAGE1_UNKNOWN_REMOTE_SETTINGS');
+ const safeKey=/^[A-Za-z_][A-Za-z0-9_]{0,79}$/.test(key)?key:'[redacted-key]';
+ error.diagnostic={location,field:safeKey,type:value===null?'null':Array.isArray(value)?'array':typeof value,reason};
+ throw error;
+}
 function same(a,b,code){try{assert.deepEqual(a,b);}catch{fail(code);}}
-function defaultsMatch(actual,defaults){
- if(!actual||typeof actual!=='object'||Array.isArray(actual))fail('REMOTE_SETTINGS_MISMATCH');
- for(const [key,value]of Object.entries(actual)){if(!Object.hasOwn(defaults,key))fail('UNKNOWN_REMOTE_SETTINGS');if(typeof defaults[key]==='object')defaultsMatch(value,defaults[key]);else if(value!==defaults[key])fail('REMOTE_SETTINGS_MISMATCH');}
+function settingsMismatch(location,field,value,reason){
+ const error=new Stage1Error('STAGE1_REMOTE_SETTINGS_MISMATCH');
+ error.diagnostic={location,field,type:value===null?'null':Array.isArray(value)?'array':typeof value,reason};
+ throw error;
+}
+function defaultsMatch(actual,defaults,location='settings'){
+ if(!actual||typeof actual!=='object'||Array.isArray(actual)){const split=location.lastIndexOf('.');settingsMismatch(split<0?'settings':location.slice(0,split),split<0?location:location.slice(split+1),actual,'expected_object');}
+ for(const [key,value]of Object.entries(actual)){if(!Object.hasOwn(defaults,key))unknownSetting(location,key,value);if(typeof defaults[key]==='object')defaultsMatch(value,defaults[key],location+'.'+key);else if(value!==defaults[key])settingsMismatch(location,key,value,'expected_default');}
 }
 function parse(args){
  if(args.length===1&&args[0]==='--dry-run')return {dryRun:true};
@@ -38,7 +50,7 @@ function assertUpload(metadata){
  if(metadata.compatibility_date!=='2026-04-01')fail('UPLOAD_COMPATIBILITY_REJECTED');
  if(metadata.compatibility_flags!==undefined)same(metadata.compatibility_flags,[],'UPLOAD_COMPATIBILITY_REJECTED');
  if(metadata.logpush!==undefined&&metadata.logpush!==false)fail('UNKNOWN_UPLOAD_SETTINGS');
- if(metadata.observability!==undefined)defaultsMatch(metadata.observability,{enabled:false,head_sampling_rate:1,redact_query_string:false,logs:{enabled:false,head_sampling_rate:1,invocation_logs:true,persist:true},traces:{enabled:false,persist:true,head_sampling_rate:1}});
+ if(metadata.observability!==undefined)defaultsMatch(metadata.observability,{enabled:false,head_sampling_rate:1,redact_query_string:false,logs:{enabled:false,head_sampling_rate:1,invocation_logs:true,persist:true},traces:{enabled:false,persist:true,head_sampling_rate:1}},'upload.metadata.observability');
  if(metadata.package_dependencies!==undefined){const manifest=JSON.parse(fs.readFileSync(path.join(candidate.ROOT,'package.json'),'utf8'));const versions={...manifest.dependencies,...manifest.devDependencies};if(!Array.isArray(metadata.package_dependencies)||metadata.package_dependencies.length>Object.keys(versions).length)fail('UNKNOWN_UPLOAD_SETTINGS');for(const dep of metadata.package_dependencies){if(Object.keys(dep).sort().join(',')!=='installedVersion,name,packageJsonVersion'||versions[dep.name]!==dep.packageJsonVersion||dep.installedVersion!==dep.packageJsonVersion)fail('UNKNOWN_UPLOAD_SETTINGS');}}
 }
 async function snapshot(read,accountId){
@@ -53,14 +65,52 @@ async function snapshot(read,accountId){
  if(environment!=='production')fail('ENVIRONMENT_UNVERIFIED');
  const env=await read(service+'/environments/'+environment);const runtime=env?.script;
  if(!runtime||runtime.migration_tag!=='auth-v1'||runtime.compatibility_date!=='2026-04-01')fail('MIGRATION_OR_COMPATIBILITY_MISMATCH');
- const knownScriptFields=['id','etag','tag','handlers','named_handlers','created_on','modified_on','last_deployed_from','usage_model','compatibility_date','compatibility_flags','migration_tag','observability','limits','placement','tail_consumers','streaming_tail_consumers','tags','exports','containers','cache_options','logpush'];
- if(Object.keys(runtime).some(key=>!knownScriptFields.includes(key)))fail('UNKNOWN_REMOTE_SETTINGS');
- for(const key of ['compatibility_flags','tail_consumers','streaming_tail_consumers','tags'])if(runtime[key]!==undefined&&(!Array.isArray(runtime[key])||runtime[key].length))fail('REMOTE_SETTINGS_MISMATCH');
- if(runtime.observability?.enabled!==false)fail('OBSERVABILITY_UNVERIFIED');
- defaultsMatch(runtime.observability,{enabled:false,head_sampling_rate:1,redact_query_string:false,logs:{enabled:false,head_sampling_rate:1,invocation_logs:true,persist:true},traces:{enabled:false,persist:true,head_sampling_rate:1}});
- if(runtime.limits!==undefined)defaultsMatch(runtime.limits,{});
- if(runtime.placement!==undefined)defaultsMatch(runtime.placement,{});
- for(const key of ['exports','containers','cache_options','logpush'])if(runtime[key]!==undefined&&runtime[key]!==false)fail('UNKNOWN_REMOTE_SETTINGS');
+ // Legacy script response metadata: do not equate this with modern deployment.id.
+ // Wrangler consumes legacy deployment_id as a version identifier.
+ const knownScriptFields=['id','etag','tag','handlers','named_handlers','created_on','modified_on','last_deployed_from','usage_model','compatibility_date','compatibility_flags','migration_tag','observability','limits','placement','tail_consumers','streaming_tail_consumers','tags','exports','containers','cache_options','logpush','deployment_id','has_assets','has_modules'];
+ for(const key of Object.keys(runtime))if(!knownScriptFields.includes(key))unknownSetting('environment.script',key,runtime[key]);
+ // Empty legacy identifier means no auxiliary ID; authoritative version/deployment
+ // checks above and below remain mandatory. Never fill or rewrite this field.
+ if(Object.hasOwn(runtime,'deployment_id')&&(typeof runtime.deployment_id!=='string'||(runtime.deployment_id!==''&&!runtime.deployment_id.trim()))){
+  const value=runtime.deployment_id,error=new Stage1Error('STAGE1_SCRIPT_DEPLOYMENT_METADATA_INVALID');
+  error.diagnostic={location:'environment.script',field:'deployment_id',type:value===null?'null':Array.isArray(value)?'array':typeof value,reason:typeof value!=='string'?'expected_nonblank_string':value.length===0?'empty_string':'blank_string'};
+  throw error;
+ }
+ // Script response metadata only; this Worker has no static assets configuration.
+ if(Object.hasOwn(runtime,'has_assets')&&runtime.has_assets!==false)fail('SCRIPT_ASSETS_MISMATCH');
+ // src/index.mjs is an ES Modules Worker, not a service-worker script.
+ if(Object.hasOwn(runtime,'has_modules')&&runtime.has_modules!==true)fail('SCRIPT_MODULES_MISMATCH');
+ // Wrangler's downloaded-config construction treats null tail_consumers as unset.
+ // Do not extend this exception to streaming consumers or other settings.
+ for(const key of ['compatibility_flags','tail_consumers','streaming_tail_consumers','tags'])if(runtime[key]!==undefined&&!(key==='tail_consumers'&&runtime[key]===null)&&(!Array.isArray(runtime[key])||runtime[key].length))settingsMismatch('environment.script',key,runtime[key],Array.isArray(runtime[key])?'expected_empty_array':'expected_array');
+ // Only a completely absent parent uses Wrangler's disabled remote defaults.
+ // A present undefined/null/object still undergoes all existing validation.
+ if(Object.hasOwn(runtime,'observability')){
+ if(runtime.observability?.enabled!==false){
+  const parent=runtime.observability,value=parent?.enabled,error=new Stage1Error('STAGE1_OBSERVABILITY_UNVERIFIED');
+  const present=parent!=null&&Object.hasOwn(Object(parent),'enabled');
+  error.diagnostic={location:'environment.script.observability',field:'enabled',present,type:value===null?'null':Array.isArray(value)?'array':typeof value,reason:!present?'missing_field':typeof value!=='boolean'?'expected_boolean':'expected_disabled'};
+  // Fixed schema paths only. Never enumerate remote keys or serialize their values.
+  const shape=(container,field,location,expectedType)=>{
+   const present=container!=null&&Object.hasOwn(Object(container),field),value=present?container[field]:undefined;
+   const type=value===null?'null':Array.isArray(value)?'array':typeof value;
+   return {location,field,present,type,reason:!present?'missing_field':type!==expectedType?'unexpected_type':'type_only'};
+  };
+  error.diagnostics=[shape(runtime,'observability','environment.script','object')];
+  if(parent!==null&&typeof parent==='object'&&!Array.isArray(parent)){
+   for(const field of ['logs','traces']){
+    error.diagnostics.push(shape(parent,field,'environment.script.observability','object'));
+    const child=parent[field];
+    if(child!==null&&typeof child==='object'&&!Array.isArray(child))error.diagnostics.push(shape(child,'enabled','environment.script.observability.'+field,'boolean'));
+   }
+  }
+  throw error;
+ }
+ defaultsMatch(runtime.observability,{enabled:false,head_sampling_rate:1,redact_query_string:false,logs:{enabled:false,head_sampling_rate:1,invocation_logs:true,persist:true},traces:{enabled:false,persist:true,head_sampling_rate:1}},'environment.script.observability');
+ }
+ if(runtime.limits!==undefined)defaultsMatch(runtime.limits,{},'environment.script.limits');
+ if(runtime.placement!==undefined)defaultsMatch(runtime.placement,{},'environment.script.placement');
+ for(const key of ['exports','containers','cache_options','logpush'])if(runtime[key]!==undefined&&runtime[key]!==false)unknownSetting('environment.script',key,runtime[key],'expected_absent_or_false');
  const bindings=await read(service+'/environments/'+environment+'/bindings');
  if(!Array.isArray(bindings))fail('BINDINGS_UNVERIFIED');
  const secrets=bindings.filter(b=>b.type==='secret_text');same(secrets.map(b=>b.name).sort(),[...SECRET_NAMES].sort(),'SECRET_NAMES_MISMATCH');
@@ -125,4 +175,4 @@ async function run(args){
  await api.stage1Main(cliArgs(options.dryRun));
 }
 module.exports={WORKER,NAMESPACE,VERSION,SECRET_NAMES,CONFIG_SHA,parse,localConfig,allowedDiff,assertNoMigration,assertUpload,snapshot,patchProduction,BRIDGE,cliArgs,hooks,run};
-if(require.main===module)run(process.argv.slice(2)).catch(error=>{console.error(error instanceof Stage1Error?error.message:'STAGE1_STOPPED_NO_AUTOMATIC_RETRY');process.exitCode=1;});
+if(require.main===module)run(process.argv.slice(2)).catch(error=>{console.error(error instanceof Stage1Error?error.message:'STAGE1_STOPPED_NO_AUTOMATIC_RETRY');if(error instanceof Stage1Error){if(error.diagnostic)console.error(JSON.stringify(error.diagnostic));for(const diagnostic of error.diagnostics||[])console.error(JSON.stringify(diagnostic));}process.exitCode=1;});
