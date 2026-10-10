@@ -214,3 +214,32 @@ dry-run生成物はignoredのworker/work配下だけ。
 本番設定、Secret、DO保存データ、Migration、Discordに変更なし。
 今回commit/push指示はないため、成果物はローカル保存のみ。
 検証完了時点で停止し、次の明示指示を待つ。
+
+## 11. Stage 1本番デプロイ後の検証記録（2026-10-10追記）
+
+**Stage 1主要検証PASS。Migration `auth-v1` の履歴の直接確認は未了（NOT VERIFIED）。**
+
+本節は、ユーザーから受領した本番確認結果の記録。
+この追記作業でCloudflare管理APIや本番ブラウザ検証を再実行したものではない。
+前節までの「本番未実施」「別承認待ち」は準備時点の記録として残す。
+確認対象のGitHub mainは `a42177fa47d10ed53a1ad9d0414ff20c1b7273ce`。
+Git commit SHAとCloudflare Version IDは別の識別子であり、同一視しない。
+
+| 確認項目 | 確認結果 | 判定・証拠の範囲 |
+| --- | --- | --- |
+| Worker | `discord-event-poster-api` | PASS（ユーザー確認済み） |
+| 新Versionと割当 | `f4891b00-e5e7-4b42-bfce-df5875c1a04e` が100%割当 | PASS（ユーザー確認済み） |
+| 投稿flag | `FORUM_POSTS_ENABLED=false` | PASS（ユーザー確認済み、投稿無効） |
+| Secret名5件の維持 | `ALLOWED_ORIGIN` / `APP_PASSWORD_HASH` / `DISCORD_BOT_TOKEN` / `DISCORD_FORUM_CHANNEL_ID` / `SESSION_SIGNING_KEY` | PASS（ユーザー確認済み、名前の維持のみ。値は取得・記録していない） |
+| Durable Objectバインディング | `AUTH_STATE`（`AuthState`）維持 | PASS（ユーザー確認済み） |
+| Durable Object Namespace ID | `5157fbc20842458f8e8269b821e51f47` 一致 | PASS（ユーザー確認済み） |
+| Migration `auth-v1` の履歴 | 直接未確認 | NOT VERIFIED（確認済みとは記載しない） |
+
+Namespace IDとバインディングの一致は、Migration履歴の直接確認の代替にはしない。
+認証・session・logout・tags・投稿APIの404・CPU・SQLite backendなど、この依頼で個別の検証結果が提示されていない項目について、本節で追加のPASS判定を行わない。
+Stage 1主要検証PASSは上表の確認済み項目に基づく判定であり、Migration直接確認未了を含む全項目PASSの意味ではない。
+Stage 2（投稿有効化）へ進む判断は行わない。
+
+今回の変更は本書への検証結果追記のみ。
+保護対象 `worker/wrangler.jsonc` と `.bak` は一切編集・コミット対象にしない。
+実装変更、Secret操作、Stage 2、Discord投稿、デプロイは実行しない。
