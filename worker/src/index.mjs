@@ -1,64 +1,42 @@
-import { pbkdf2Async } from '@noble/hashes/pbkdf2.js';
-import { sha256 } from '@noble/hashes/sha2.js';
+import {authenticatedSession,migrateAuthentication,SESSION_KEY,sessionConfigured} from './auth-session.mjs';
+import {oauthState,cleanupOAuth} from './oauth-state.mjs';
+import {handleOAuth,oauthConfigured} from './oauth-handler.mjs';
 import { hasAllowedHost } from './request-boundary.mjs';
 import { fetchLegacyForum } from './discord-client.mjs';
 import { forumTagMapping } from './forum-tags.mjs';
-import { postState,cleanupPosts,scheduleEarlier } from './post-state.mjs';
+import { postState,cleanupPosts } from './post-state.mjs';
 import { verifyInternal,OperationError,UUID } from './post-keys.mjs';
 import {createPostHandler} from './post-handler.mjs';
 import {cooldownState} from './discord-cooldown-state.mjs';
 import {createDiscordFetch} from './discord-cooldown.mjs';
 import {discordRateInfo,DiscordTransportError} from './discord-client.mjs';
 
-const enc = new TextEncoder();
-const hex = bytes => Array.from(new Uint8Array(bytes), x=>x.toString(16).padStart(2,'0')).join('');
-const unhex = value => Uint8Array.from(value.match(/../g)||[], x=>parseInt(x,16));
 const json = (value,status=200) => Response.json(value,{status,headers:{'Cache-Control':'no-store'}});
-async function signingKey(secret) { return crypto.subtle.importKey('raw',enc.encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign','verify']); }
-export async function passwordHash(password,salt,iterations=600000) {
-  // Workers production Web Crypto rejects PBKDF2 above 100,000 iterations.
-  // Pure JS computes the SAME RFC 8018 hash, retaining existing 600k secrets.
-  if(typeof password!=='string'||password.length>256||!Number.isInteger(iterations)||iterations<1||iterations>600000||!/^[a-f0-9]{32}$/.test(salt))throw new Error('Invalid password hash parameters');
-  const bytes=enc.encode(password),saltBytes=unhex(salt);
-  let derived;
-  try { derived=await pbkdf2Async(sha256,bytes,saltBytes,{c:iterations,dkLen:32});return hex(derived); }
-  finally { bytes.fill(0);saltBytes.fill(0);derived?.fill(0); }
-}
-function equal(a,b) { let diff=a.length^b.length; for(let i=0;i<Math.max(a.length,b.length);i++)diff|=(a.charCodeAt(i)||0)^(b.charCodeAt(i)||0); return diff===0; }
-async function tokenFor(id,expires,key) { const message=id+'.'+expires; return message+'.'+hex(await crypto.subtle.sign('HMAC',await signingKey(key),enc.encode(message))); }
-async function verifyToken(token,key) {
-  const parts=token.split('.'); if(parts.length!==3||!/^[a-f0-9]{64}$/.test(parts[0])||!/^\d{13}$/.test(parts[1])||!/^[a-f0-9]{64}$/.test(parts[2])||Number(parts[1])<=Date.now())return null;
-  if(!await crypto.subtle.verify('HMAC',await signingKey(key),unhex(parts[2]),enc.encode(parts[0]+'.'+parts[1])))return null;
-  return {id:parts[0],expires:Number(parts[1])};
-}
 export class AuthState {
   constructor(state,env) { this.storage=state.storage; this.env=env; this.queue=Promise.resolve(); }
-  // Serialize the entire authentication operation, including PBKDF2 and storage awaits.
+  // Serialize durable authentication/post operations; OAuth network calls run outside this queue.
   fetch(request) { const operation=this.queue.then(()=>this.handle(request)); this.queue=operation.catch(()=>{}); return operation; }
-  alarm() { const operation=this.queue.then(async()=>{const now=Date.now();const sessions=(await this.storage.get('sessions')||[]).filter(s=>s.expires>now);const attempts=(await this.storage.get('attempts')||[]).filter(t=>t>now-900000);await this.storage.put('sessions',sessions);await this.storage.put('attempts',attempts);await cleanupPosts(this.storage,now);if(sessions.length||attempts.length)await scheduleEarlier(this.storage,now+3600000);});this.queue=operation.catch(()=>{});return operation; }
+  alarm() { const operation=this.queue.then(async()=>{const now=Date.now();await migrateAuthentication(this.storage);await cleanupOAuth(this.storage,now);await cleanupPosts(this.storage,now);});this.queue=operation.catch(()=>{});return operation; }
   async handle(request) {
-    const packet=await request.json();const {action,password,token}=packet; const now=Date.now();
-    const sessions=(await this.storage.get('sessions')||[]).filter(s=>s.expires>now);
-    if(action==='login') {
-      const attempts=(await this.storage.get('attempts')||[]).filter(t=>t>now-900000);
-      if(attempts.length>=5)return json({error:'ログイン試行上限です。15分後に再試行してください。'},429);
-      attempts.push(now); await this.storage.put('attempts',attempts); await scheduleEarlier(this.storage,now+3600000);
-      const [algorithm,iterations,salt,expected]=this.env.APP_PASSWORD_HASH.split('$');
-      const actual=await passwordHash(password,salt,Number(iterations));
-      if(!equal(actual,expected))return json({error:'認証できませんでした。'},401);
-      const id=hex(crypto.getRandomValues(new Uint8Array(32))),expires=now+3600000;
-      sessions.push({id,expires}); await this.storage.put('sessions',sessions.slice(-20));
-      return json({token:await tokenFor(id,expires,this.env.SESSION_SIGNING_KEY),expiresAt:expires});
+    const packet=await request.json();const {action,token}=packet; const now=Date.now();
+    if(!sessionConfigured(this.env)||!oauthConfigured(this.env))return json({error:{code:'AUTH_NOT_CONFIGURED'}},503);
+    await migrateAuthentication(this.storage);
+    if(typeof action==='string'&&action.startsWith('oauth.')){
+      const {proof,...body}=packet;
+      if(!oauthConfigured(this.env)||request.url!=='https://internal/auth'||request.method!=='POST'||!await verifyInternal(body,proof,this.env.SESSION_SIGNING_KEY))return json({error:{code:'INTERNAL_ACCESS_REJECTED'}},403);
+      try{return json(await oauthState(this.storage,this.env,body,now));}
+      catch(error){return json({error:{code:error instanceof OperationError?error.code:'STATE_UNAVAILABLE'}},error instanceof OperationError?error.httpStatus:503);}
     }
-    const verified=await verifyToken(token||'',this.env.SESSION_SIGNING_KEY);
-    if(!verified||!sessions.some(s=>s.id===verified.id&&s.expires===verified.expires))return json({error:'ログインし直してください。'},401);
+    if(!['check','logout'].includes(action)&&!(typeof action==='string'&&(action.startsWith('post.')||action.startsWith('discord.'))))return json({error:{code:'AUTH_METHOD_REMOVED'}},404);
+    const verified=await authenticatedSession(this.storage,this.env,token);
+    if(!verified)return json({error:'ログインし直してください。'},401);
     if(typeof action==='string'&&(action.startsWith('post.')||action.startsWith('discord.'))){
       const {proof,...body}=packet;
       if(request.url!=='https://internal/auth'||request.method!=='POST'||!await verifyInternal(body,proof,this.env.SESSION_SIGNING_KEY))return json({error:{code:'INTERNAL_ACCESS_REJECTED'}},403);
       try{return json(action.startsWith('post.')?await postState(this.storage,this.env,body,now):await cooldownState(this.storage,body,now));}
       catch(error){return json({error:{code:error instanceof OperationError?error.code:'STATE_UNAVAILABLE'}},error instanceof OperationError?error.httpStatus:503);}
     }
-    if(action==='logout')await this.storage.put('sessions',sessions.filter(s=>s.id!==verified.id));
+    if(action==='logout'){const sessions=await this.storage.get(SESSION_KEY)||[];await this.storage.put(SESSION_KEY,sessions.filter(s=>s.id!==verified.id));await this.storage.sync();}
     return json({authenticated:true});
   }
 }
@@ -69,7 +47,7 @@ async function smallJson(request) {
   const bytes=new Uint8Array(length);let offset=0;for(const p of parts){bytes.set(p,offset);offset+=p.length;}return JSON.parse(new TextDecoder().decode(bytes));
 }
 function configured(env) {
-  return env.AUTH_STATE&&/^pbkdf2-sha256\$600000\$[a-f0-9]{32}\$[a-f0-9]{64}$/.test(env.APP_PASSWORD_HASH||'')&&typeof env.SESSION_SIGNING_KEY==='string'&&env.SESSION_SIGNING_KEY.length>=64&&/^\d{1,20}$/.test(env.DISCORD_FORUM_CHANNEL_ID||'')&&env.DISCORD_BOT_TOKEN;
+  return oauthConfigured(env)&&/^\d{1,20}$/.test(env.DISCORD_FORUM_CHANNEL_ID||'')&&env.DISCORD_BOT_TOKEN;
 }
 function diagnostic(stage,error,status) {
   const name=typeof error?.name==='string'&&/^[A-Za-z][A-Za-z0-9_$.-]{0,63}$/.test(error.name)?error.name:'Error';
@@ -81,6 +59,8 @@ async function auth(env,payload) { const stub=env.AUTH_STATE.get(env.AUTH_STATE.
 export default {
   async fetch(request,env) {
     if(!hasAllowedHost(request))return json({error:'アクセスできません。'},403);
+    const oauthPath=new URL(request.url).pathname;
+    if(['/api/oauth/start','/api/oauth/callback','/api/oauth/complete'].includes(oauthPath)&&request.method!=='OPTIONS')return handleOAuth(request,env);
     const origin=request.headers.get('Origin');
     if(!origin||origin!==env.ALLOWED_ORIGIN)return json({error:'アクセスできません。'},403);
     const headers={'Access-Control-Allow-Origin':origin,'Access-Control-Expose-Headers':'Retry-After,Location','Vary':'Origin','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'};
@@ -98,13 +78,10 @@ export default {
         const requested=(request.headers.get('Access-Control-Request-Headers')||'').toLowerCase().split(',').map(x=>x.trim()).filter(Boolean);
         if(!['GET','POST'].includes(method)||requested.some(h=>!['authorization','content-type'].includes(h)))response=json({error:'アクセスできません。'},403);
         else response=new Response(null,{status:204,headers:{'Access-Control-Allow-Methods':'GET, POST','Access-Control-Allow-Headers':'Authorization, Content-Type','Access-Control-Max-Age':'600'}});
-      } else if(!configured(env))response=json({error:'認証サービスの設定が完了していません。'},503);
-      else if(path==='/api/login'&&request.method==='POST') {
-        let body;try{body=await smallJson(request);}catch{return new Response(JSON.stringify({error:'入力を確認してください。'}),{status:400,headers:{...headers,'Content-Type':'application/json'}});}
-        if(typeof body.password!=='string'||body.password.length<1||body.password.length>256)response=json({error:'入力を確認してください。'},400);
-        else {stage='auth_login';response=await auth(env,{action:'login',password:body.password});}
-      } else if((path==='/api/logout'&&request.method==='POST')||(path==='/api/session'&&request.method==='GET')||(path==='/api/forum/tags'&&request.method==='GET')||(path==='/api/forum/webhook-check'&&request.method==='POST')) {
-        const token=request.headers.get('Authorization')?.match(/^Bearer ([a-f0-9.]{1,160})$/)?.[1]||'';
+      } else if(path==='/api/login')response=json({error:{code:'AUTH_METHOD_REMOVED'}},404);
+      else if(!configured(env))response=json({error:'認証サービスの設定が完了していません。'},503);
+      else if((path==='/api/logout'&&request.method==='POST')||(path==='/api/session'&&request.method==='GET')||(path==='/api/forum/tags'&&request.method==='GET')||(path==='/api/forum/webhook-check'&&request.method==='POST')) {
+        const token=request.headers.get('Authorization')?.match(/^Bearer (oauth2\.[a-f0-9.]{1,160})$/)?.[1]||'';
         stage='auth_check';
         response=await auth(env,{action:path==='/api/logout'?'logout':'check',token});
         if(response.ok&&path==='/api/session')response=json({authenticated:true,capabilities:{forumPosts:env.FORUM_POSTS_ENABLED==='true',forumPostStatus:['true','read-only'].includes(env.FORUM_POSTS_ENABLED),apiVersion:1,operationTicket:'v1'}});

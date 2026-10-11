@@ -34,7 +34,7 @@ export function createPostHandler({fetchImpl,timeoutMs}={}){
         return new Response(null,{status:204,headers:{'Access-Control-Allow-Origin':origin,'Vary':'Origin','Access-Control-Allow-Methods':get?'GET':'POST','Access-Control-Allow-Headers':'Authorization,Content-Type,Idempotency-Key','Cache-Control':'no-store'}});
       }
       if(request.method!==(get?'GET':'POST')){const r=rejected('METHOD_NOT_ALLOWED',405,requestId,origin);r.headers.set('Allow',get?'GET':'POST');return r;}
-      const token=request.headers.get('Authorization')?.match(/^Bearer ([a-f0-9.]{1,160})$/)?.[1];
+      const token=request.headers.get('Authorization')?.match(/^Bearer (oauth2\.[a-f0-9.]{1,160})$/)?.[1];
       if(!token)return rejected('SESSION_REQUIRED',401,requestId,origin);
       await call(env,{action:'check',token},false);
       if(intent){

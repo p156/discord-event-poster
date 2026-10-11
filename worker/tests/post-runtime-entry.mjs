@@ -1,8 +1,10 @@
 // Test-only harness. Mock all Discord traffic; absent from production entrypoint.
+import {discordOAuthMock} from './oauth-mock.mjs';
 import worker from '../src/index.mjs';
 export {AuthState} from '../src/index.mjs';
 let writes=0,mode=null;
 globalThis.fetch=async(url,opts={})=>{
+  if(String(url)==='https://discord.com/api/oauth2/token'||String(url)==='https://discord.com/api/v10/users/@me')return discordOAuthMock(url,opts);
   if(!String(url).startsWith('https://discord.com/api/v10/'))throw new Error('REAL_NETWORK_DISABLED');
   if(opts.method!=='POST'){if(url!=='https://discord.com/api/v10/channels/123')throw new Error('UNEXPECTED_TEST_ROUTE');return Response.json({id:'123',guild_id:'456',type:15,flags:0,available_tags:['周遊型','ホール型','ルーム型','オンライン','持ち帰り','イマーシブ','謎解き','ホラー'].map((name,i)=>({id:String(100+i),name,moderated:false}))});}
   if(url!=='https://discord.com/api/v10/channels/123/threads')throw new Error('UNEXPECTED_TEST_DESTINATION');

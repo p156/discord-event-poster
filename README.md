@@ -6,6 +6,12 @@
 
 本番運用を開始しています。投稿機能の有効・無効はWorker側の設定で制御します。
 
+この開発ブランチではパスワード認証をDiscord OAuth2へ移行しました。本番への反映は未実施です。
+`identify`で本人のDiscordユーザーIDを確認し、Workerの許可IDと完全一致した場合だけログインできます。
+アプリセッションは1時間で失効し、アクセスによって延長されません。旧パスワード経路と旧セッションは受理しません。
+DiscordのアクセストークンやClient SecretはWorkerだけで扱います。
+設定・移行・検証の詳細は[OAuth2移行手順](worker/docs/OAUTH2-MIGRATION.md)を参照してください。
+
 ## 操作の流れ
 
 1. 告知文を貼り付けて「解析する」を押します。
@@ -49,6 +55,7 @@ npm test
 npm run test:browser
 npm run test:post-runtime
 npm run test:worker-runtime
+npm run test:migration-runtime
 npm run test:legacy-browser
 npm run test:phase2-browser
 ```
@@ -72,7 +79,7 @@ Workerのサーバー設定`FORUM_POSTS_ENABLED`は次の3モードで制御し�
 リクエストヘッダーやURLパラメーターから設定を有効化することはできません。
 ローカル試験ではMiniflareのテスト用bindingで設定し、既存Wrangler設定は変更しません。
 本番設定の変更は、事前に内容を確認しユーザー承認を得てから実施します。
-既存Secretの再生成や認証の無効化は不要です。
+OAuth2移行では新しい認証専用Secretを追加します。既存Secretは削除せず、投稿操作の署名鍵は維持します。
 
 詳細は[Step 4の記録](worker/docs/phase3/STEP4-RESULTS.md)、[API契約](worker/docs/phase3/API-CONTRACT.md)、[実装計画](worker/docs/phase3/IMPLEMENTATION-PLAN.md)を参照してください。
 

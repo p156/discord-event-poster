@@ -2,7 +2,8 @@
 (function(){
   'use strict';
   const API='https://discord-event-poster-api.monma5435.workers.dev';
-  const SESSION='discord-event-poster.session',OPERATIONS='discord-event-poster.operations.v1';
+  const SESSION='discord-event-poster.session.oauth2',OPERATIONS='discord-event-poster.operations.v1';
+  const SESSION_TOKEN=/^oauth2\.[a-f0-9]{64}\.\d{13}\.[a-f0-9]{64}$/;
   const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
   const states=['not_started','preparing','sending','succeeded','retryable','failed','unknown','expired','unconfirmed'];
   const snowflake=s=>typeof s==='string'&&/^[1-9]\d{0,19}$/.test(s)&&BigInt(s)<=18446744073709551615n;
@@ -19,13 +20,13 @@
   function validMeta(m){return m&&typeof m.operationId==='string'&&UUID.test(m.operationId)&&typeof m.idempotencyKey==='string'&&m.idempotencyKey.length<=1024&&/^v1\.[A-Za-z0-9_-]+\.[a-f0-9]{64}$/.test(m.idempotencyKey)&&typeof m.payloadHash==='string'&&/^[a-f0-9]{64}$/.test(m.payloadHash)&&typeof m.issuedAt==='string'&&typeof m.expiresAt==='string'&&Number.isFinite(Date.parse(m.issuedAt))&&Date.parse(m.expiresAt)-Date.parse(m.issuedAt)===2592000000&&states.includes(m.status);}
   function create(){
     let session=null,operations=[],storageError=false;
-    try{const s=JSON.parse(sessionStorage.getItem(SESSION)||'null');if(s&&typeof s.token==='string'&&/^[a-f0-9.]{1,160}$/.test(s.token)&&Number.isSafeInteger(s.expiresAt))session=s;}catch{}
+    try{sessionStorage.removeItem('discord-event-poster.session');const s=JSON.parse(sessionStorage.getItem(SESSION)||'null');if(s&&typeof s.token==='string'&&SESSION_TOKEN.test(s.token)&&Number.isSafeInteger(s.expiresAt)&&Number(s.token.split('.')[2])===s.expiresAt)session=s;}catch{}
     try{const saved=JSON.parse(sessionStorage.getItem(OPERATIONS)||'[]');if(!Array.isArray(saved)||saved.length>200||saved.some(m=>!validMeta(m))||new Set(saved.map(m=>m.operationId)).size!==saved.length)throw fail('STORAGE_INVALID');operations=saved.filter(m=>Date.parse(m.expiresAt)>Date.now());if(operations.length!==saved.length)save();}catch{storageError=true;}
     function forgetSession(){session=null;try{sessionStorage.removeItem(SESSION);}catch{}}
     function save(){const text=JSON.stringify(operations);try{sessionStorage.setItem(OPERATIONS,text);if(sessionStorage.getItem(OPERATIONS)!==text)throw fail('STORAGE_UNAVAILABLE');storageError=false;}catch{storageError=true;throw fail('STORAGE_UNAVAILABLE');}}
     function remember(meta){if(!validMeta(meta))throw fail('RESPONSE_INVALID');const clean={operationId:meta.operationId,idempotencyKey:meta.idempotencyKey,payloadHash:meta.payloadHash,issuedAt:meta.issuedAt,expiresAt:meta.expiresAt,status:meta.status};const i=operations.findIndex(x=>x.operationId===clean.operationId);if(i<0){if(operations.length>=200)throw fail('STORAGE_FULL');operations.push(clean);}else operations[i]=clean;save();return clean;}
     async function api(path,method='GET',body,key){
-      if(path!=='/api/login'&&(!session||session.expiresAt<=Date.now())){forgetSession();throw fail('SESSION_REQUIRED');}
+      if(path!=='/api/oauth/complete'&&(!session||session.expiresAt<=Date.now())){forgetSession();throw fail('SESSION_REQUIRED');}
       const controller=new AbortController();let timer;
       try{
         const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(fail('NETWORK_UNKNOWN'));},15000);});
@@ -36,7 +37,38 @@
     return {
       operations:()=>operations.map(m=>({...m})),storageReady:()=>!storageError&&operations.length<200,
       remember,save,normalize,hash,
-      async login(password){forgetSession();const r=await api('/api/login','POST',{password});if(!r.ok||typeof r.data.token!=='string'||!Number.isSafeInteger(r.data.expiresAt))throw fail('LOGIN_FAILED');session=r.data;try{sessionStorage.setItem(SESSION,JSON.stringify(session));}catch{forgetSession();throw fail('STORAGE_UNAVAILABLE');}return true;},
+      async login(){
+        forgetSession();
+        const name='poster_oauth_'+Array.from(crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,'0')).join('');
+        const popup=window.open('about:blank',name,'popup,width=520,height=720');
+        if(!popup)throw fail('LOGIN_FAILED');
+        let verifier=Array.from(crypto.getRandomValues(new Uint8Array(32)),x=>x.toString(16).padStart(2,'0')).join(''),cleanup;
+        try{
+          const challenge=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier))),x=>x.toString(16).padStart(2,'0')).join('');
+          const handoff=await new Promise((resolve,reject)=>{
+            const listener=e=>{
+              if(e.origin!==API||e.source!==popup||!e.data||e.data.type!=='discord-event-poster.oauth2')return;
+              if(e.data.error){reject(fail('LOGIN_FAILED'));return;}
+              if(typeof e.data.state!=='string'||typeof e.data.handoff!=='string'||!/^[a-f0-9]{64}$/.test(e.data.state)||!/^[a-f0-9]{64}$/.test(e.data.handoff))return;
+              resolve(e.data.handoff);
+            };
+            const deadline=setTimeout(()=>reject(fail('LOGIN_FAILED')),300000);
+            const closed=setInterval(()=>{if(popup.closed)reject(fail('LOGIN_FAILED'));},500);
+            cleanup=()=>{window.removeEventListener('message',listener);clearTimeout(deadline);clearInterval(closed);};
+            window.addEventListener('message',listener);
+            const form=document.createElement('form'),input=document.createElement('input');
+            form.method='POST';form.action=API+'/api/oauth/start';form.target=name;form.hidden=true;
+            input.type='hidden';input.name='challenge';input.value=challenge;form.appendChild(input);document.body.appendChild(form);
+            try{form.submit();}catch{reject(fail('LOGIN_FAILED'));}finally{form.remove();}
+          });
+          cleanup?.();
+          const r=await api('/api/oauth/complete','POST',{handoff,verifier});
+          if(!r.ok||typeof r.data.token!=='string'||!SESSION_TOKEN.test(r.data.token)||!Number.isSafeInteger(r.data.expiresAt)||Number(r.data.token.split('.')[2])!==r.data.expiresAt||r.data.expiresAt<=Date.now()||r.data.expiresAt>Date.now()+3600000)throw fail('LOGIN_FAILED');
+          session={token:r.data.token,expiresAt:r.data.expiresAt};
+          try{const saved=JSON.stringify(session);sessionStorage.setItem(SESSION,saved);if(sessionStorage.getItem(SESSION)!==saved)throw fail('STORAGE_UNAVAILABLE');}catch{forgetSession();throw fail('STORAGE_UNAVAILABLE');}
+          return true;
+        }finally{verifier='';cleanup?.();popup.close();}
+      },
       async logout(){const r=await api('/api/logout','POST');if(!r.ok)throw fail('LOGOUT_FAILED');forgetSession();},
       async session(){const r=await api('/api/session');if(!r.ok||r.data.authenticated!==true)throw fail('SESSION_REQUIRED');return r.data;},
       tags:()=>api('/api/forum/tags'),

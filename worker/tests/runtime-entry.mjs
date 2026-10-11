@@ -1,5 +1,5 @@
 import worker from '../src/index.mjs';
-export {AuthState,passwordHash} from '../src/index.mjs';
+export {AuthState} from '../src/index.mjs';
 export default {
   fetch(request,env,ctx) {
     // Miniflare dispatchFetch replaces Host with its loopback transport address.

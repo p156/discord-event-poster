@@ -2,7 +2,7 @@
   "name": "discord-event-poster-api",
   "main": "src/index.mjs",
   "compatibility_date": "2026-04-01",
-  "secrets": { "required": ["ALLOWED_ORIGIN", "DISCORD_BOT_TOKEN", "DISCORD_FORUM_CHANNEL_ID", "APP_PASSWORD_HASH", "SESSION_SIGNING_KEY"] },
+  "secrets": { "required": ["ALLOWED_ORIGIN", "DISCORD_BOT_TOKEN", "DISCORD_FORUM_CHANNEL_ID", "SESSION_SIGNING_KEY", "AUTH_SESSION_SIGNING_KEY", "DISCORD_ALLOWED_USER_ID", "DISCORD_OAUTH_CLIENT_ID", "DISCORD_OAUTH_CLIENT_SECRET", "DISCORD_OAUTH_REDIRECT_URI"] },
   "durable_objects": { "bindings": [{ "name": "AUTH_STATE", "class_name": "AuthState" }] },
   "migrations": [{ "tag": "auth-v1", "new_sqlite_classes": ["AuthState"] }],
   "observability": { "enabled": false }

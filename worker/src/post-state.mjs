@@ -1,6 +1,7 @@
 import {RETENTION_MS,PRINCIPAL,OperationError,canonicalClaims,validateClaims} from './post-keys.mjs';
 import {isSnowflake} from './forum-input.mjs';
 import {cooldownWait} from './discord-cooldown-state.mjs';
+import {authenticatedSession} from './auth-session.mjs';
 const recordKey=id=>'posts:operation:'+id;
 const expiryKey=r=>'posts:expiry:'+String(r.expiresAt).padStart(13,'0')+':'+r.operationId;
 const rateKey='posts:rate';
@@ -57,8 +58,7 @@ export async function postState(storage,env,input,now=Date.now()){
     }
     if(input.action==='post.begin'){
       if(r.status!=='preparing'||r.leaseId!==input.leaseId||now>=r.leaseUntil)return {record:view(r,now)};
-      const [sessionId,expiry]=input.token.split('.'),sessions=await tx.get('sessions')||[];
-      if(Number(expiry)<=Date.now()||!sessions.some(s=>s.id===sessionId&&s.expires===Number(expiry)))throw new OperationError('SESSION_EXPIRED',401);
+      if(!await authenticatedSession(tx,env,input.token))throw new OperationError('SESSION_EXPIRED',401);
       now=Date.now();
       if(now>=r.leaseUntil)return {record:view(refresh(r,now),now)};
       if(r.expiresAt-now<120000)throw new OperationError('OPERATION_EXPIRING',409);

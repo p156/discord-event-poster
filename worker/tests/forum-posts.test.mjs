@@ -2,7 +2,8 @@ import {test,before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
 import {fileURLToPath} from 'node:url';
-import worker,{AuthState,passwordHash} from '../src/index.mjs';
+import {fixture} from './post-fixtures.mjs';
+import worker,{AuthState} from '../src/index.mjs';
 import {WORKER_HOST,hasAllowedHost} from '../src/request-boundary.mjs';
 import {parseStrictJson,validatePostPayload,readPostRequest,PostInputError} from '../src/forum-input.mjs';
 import {botCanManageThreads,forumTagMapping} from '../src/forum-tags.mjs';
@@ -141,12 +142,11 @@ test('Host boundary ignores spoofed forward headers and preserves the canonical 
  assert.equal(hasAllowedHost(new Request('https://'+WORKER_HOST,{headers:{Host:'evil.invalid'}})),false);
 });
 test('public routes and RPC exports cannot reach the posting adapter, even with a valid session',async()=>{
- const data=new Map(),state={storage:{get:async k=>data.get(k),put:async(k,v)=>data.set(k,v),setAlarm:async()=>{}}};
- const e={...env,ALLOWED_ORIGIN:'https://poster.example',SESSION_SIGNING_KEY:'a'.repeat(64),APP_PASSWORD_HASH:'pbkdf2-sha256$600000$'+'ab'.repeat(16)+'$'+await passwordHash('TEST_ONLY_PASSWORD','ab'.repeat(16))};const auth=new AuthState(state,e);e.AUTH_STATE={idFromName:()=>0,get:()=>({fetch:r=>auth.fetch(r)})};
- const call=(url,path,headers={})=>worker.fetch(new Request(url+path,{method:'POST',headers:{Origin:e.ALLOWED_ORIGIN,'Content-Type':'application/json',...headers},body:JSON.stringify({password:'TEST_ONLY_PASSWORD',...payload()})}),e);
- const base='https://'+WORKER_HOST;const login=await call(base,'/api/login');assert.equal(login.status,200);const s=await login.json();
+ const h=await fixture(),e=h.env;
+ const call=(url,path,headers={})=>worker.fetch(new Request(url+path,{method:'POST',headers:{Origin:e.ALLOWED_ORIGIN,'Content-Type':'application/json',...headers},body:JSON.stringify(payload())}),e);
+ const base='https://'+WORKER_HOST,s={token:h.token};
  for(const path of ['/api/forum/posts','/api/forum/post-intents','/api/diagnostics/post','/api/forum/posts/123'])assert.equal((await call(base,path,{Authorization:'Bearer '+s.token})).status,404);
  assert.equal((await call('https://evil.invalid','/api/login')).status,403);assert.equal((await call(base,'/api/login',{Origin:'https://evil.invalid'})).status,403);
  const built=await build({entryPoints:[fileURLToPath(new URL('../src/index.mjs',import.meta.url))],bundle:true,write:false,format:'esm',platform:'browser',metafile:true});
- assert.ok(Object.keys(built.metafile.inputs).some(p=>p.endsWith('post-handler.mjs')));assert.deepEqual(built.metafile.outputs[Object.keys(built.metafile.outputs)[0]].exports.sort(),['AuthState','default','passwordHash']);
+ assert.ok(Object.keys(built.metafile.inputs).some(p=>p.endsWith('post-handler.mjs')));assert.deepEqual(built.metafile.outputs[Object.keys(built.metafile.outputs)[0]].exports.sort(),['AuthState','default']);
 });

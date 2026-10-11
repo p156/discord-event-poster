@@ -1,21 +1,22 @@
 import {Miniflare,convertV4MiniflareOptions} from 'miniflare';
 import {build} from 'esbuild';
 import {fileURLToPath} from 'node:url';
-import {pbkdf2Sync} from 'node:crypto';
 import assert from 'node:assert/strict';
-import {installProductionPbkdf2Limit} from './production-crypto.mjs';
+import {oauthBindings,BASE,startFlow,mockLogin} from './oauth-fixtures.mjs';
 const origin='https://runtime.example';
-const bundled=await build({entryPoints:[fileURLToPath(new URL('./runtime-entry.mjs',import.meta.url))],bundle:true,write:false,format:'esm',platform:'browser',target:'es2022'});
-const script=`(${installProductionPbkdf2Limit.toString()})();\n`+bundled.outputFiles[0].text;
-const started=performance.now();
-const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script,compatibilityDate:'2026-04-01',durableObjects:{AUTH_STATE:{className:'AuthState',useSQLite:true}},bindings:{ALLOWED_ORIGIN:origin,DISCORD_BOT_TOKEN:'TEST_ONLY',DISCORD_FORUM_CHANNEL_ID:'123',SESSION_SIGNING_KEY:'a'.repeat(64),APP_PASSWORD_HASH:'pbkdf2-sha256$600000$'+'ab'.repeat(16)+'$'+pbkdf2Sync('TEST_ONLY_PASSWORD',Buffer.from('ab'.repeat(16),'hex'),600000,32,'sha256').toString('hex')}}));
+const built=await build({entryPoints:[fileURLToPath(new URL('./post-runtime-entry.mjs',import.meta.url))],bundle:true,write:false,format:'esm',platform:'browser',target:'es2022'});
+const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:built.outputFiles[0].text,compatibilityDate:'2026-04-01',durableObjects:{AUTH_STATE:{className:'AuthState',useSQLite:true}},bindings:{...oauthBindings(origin),DISCORD_BOT_TOKEN:'TEST_ONLY',DISCORD_FORUM_CHANNEL_ID:'123',SESSION_SIGNING_KEY:'a'.repeat(64)}}));
+const dispatch=(url,opts)=>mf.dispatchFetch(url,opts);
+const call=(path,method='GET',body,token)=>dispatch(BASE+path,{method,headers:{Origin:origin,'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},...(body?{body:JSON.stringify(body)}:{})});
 try{
- const call=(path,method='GET',body,token)=>mf.dispatchFetch('https://discord-event-poster-api.monma5435.workers.dev'+path,{method,headers:{Host:'discord-event-poster-api.monma5435.workers.dev',Origin:origin,'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},...(body?{body:JSON.stringify(body)}:{})});
- const login=await call('/api/login','POST',{password:'TEST_ONLY_PASSWORD'});assert.equal(login.status,200,'workerd PBKDF2 100k cap + existing 600k secret login');
- console.log('Local workerd first login including startup: '+Math.round(performance.now()-started)+' ms (wall time, not production CPU)');const session=await login.json();
- assert.equal((await call('/api/session','GET',null,session.token)).status,200);
- assert.equal((await call('/api/logout','POST',null,session.token)).status,200);
- assert.equal((await call('/api/session','GET',null,session.token)).status,401);
- const wrong=await call('/api/login','POST',{password:'WRONG_TEST_ONLY'});assert.equal(wrong.status,401);
- console.log('PASS workerd + explicit production PBKDF2 cap: SQLite DO, 600k existing hash, wrong password, signed session, logout replay');
+ const s=await mockLogin(dispatch,origin);assert.equal((await call('/api/session','GET',null,s.token)).status,200);
+ assert.equal((await call('/api/session','GET',null,s.token.slice(0,-1)+(s.token.endsWith('0')?'1':'0'))).status,401);
+ assert.equal((await call('/api/login','POST',{password:'TEST_ONLY_PASSWORD'})).status,404);
+ assert.equal((await call('/api/session','GET',null,'a'.repeat(64)+'.'+s.expiresAt+'.'+'b'.repeat(64))).status,401);
+ assert.equal((await call('/api/logout','POST',{},s.token)).status,200);assert.equal((await call('/api/session','GET',null,s.token)).status,401);
+ const f=await startFlow(dispatch,origin),url=BASE+'/api/oauth/callback?'+new URLSearchParams({state:f.state,code:'TEST_ONLY_CODE'});
+ const results=await Promise.all([dispatch(url,{headers:{Cookie:f.cookie}}),dispatch(url,{headers:{Cookie:f.cookie}})]);assert.equal(results.filter(r=>r.status===200).length,1);assert.equal(results.filter(r=>r.status===401).length,1);
+ const html=await results.find(r=>r.status===200).text(),handoff=html.match(/"handoff":"([a-f0-9]{64})"/)[1];
+ const done=await Promise.all([call('/api/oauth/complete','POST',{handoff,verifier:f.verifier}),call('/api/oauth/complete','POST',{handoff,verifier:f.verifier})]);assert.equal(done.filter(r=>r.status===200).length,1);assert.equal(done.filter(r=>r.status===401).length,1);
+ console.log('PASS bundled workerd + SQLite DO: identify OAuth login, old auth rejected, tamper/logout rejection, parallel callback/handoff one-use; zero real Discord requests');
 }finally{await mf.dispose();}

@@ -1,5 +1,9 @@
 # Phase 3 Step 1 — Bot投稿API契約 v1（確定・未実装）
 
+OAuth2開発ブランチ更新: `/api/login`は廃止し404。session/logout/tagsと投稿APIは新OAuth2アプリBearerで保護します。
+投稿API、payload、操作キーv1、既存`SESSION_SIGNING_KEY`、所有者principalは維持します。
+旧認証・Secretについての下記Step記録は履歴です。現行認証契約は[OAuth2移行手順](../OAUTH2-MIGRATION.md)を参照してください。
+
 Step 4 update: the formal router is integrated behind the server-only
 `FORUM_POSTS_ENABLED === 'true'` gate. Default/production-equivalent requests
 remain 404. See [STEP4-RESULTS.md](STEP4-RESULTS.md) for frontend/cooldown/storage

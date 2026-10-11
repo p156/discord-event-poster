@@ -24,7 +24,7 @@ test('all sessions share 10 slots under 11 parallel submissions; GET/replay cons
 });
 test('sliding window expires exactly at 60s and backwards clock never releases quota early',async()=>{
  const real=Date.now,start=real();Date.now=()=>start;
- try{const h=await fixture();for(let n=0;n<10;n++)await h.submit(await h.issue());const i=await h.issue();Date.now=()=>start+59999;assert.equal((await h.submit(i)).status,429);Date.now=()=>start-1;assert.equal((await h.submit(i)).status,400);Date.now=()=>start+60000;assert.equal((await h.submit(i)).status,201);assert.equal(h.writes,11);h.restart();Date.now=()=>start+59999;const j=await h.issue();await h.submit(j);assert.equal(h.storage.data.get('posts:rate').lastNow,start+60000);}finally{Date.now=real;}
+ try{const h=await fixture();for(let n=0;n<10;n++)await h.submit(await h.issue());const i=await h.issue();Date.now=()=>start+59999;assert.equal((await h.submit(i)).status,429);Date.now=()=>start-1;assert.equal((await h.submit(i)).status,401);Date.now=()=>start+60000;assert.equal((await h.submit(i)).status,201);assert.equal(h.writes,11);h.restart();Date.now=()=>start+59999;const j=await h.issue();await h.submit(j);assert.equal(h.storage.data.get('posts:rate').lastNow,start+60000);}finally{Date.now=real;}
 });
 test('intent, preparing, sending, quota and sync persistence failures stop before POST',async()=>{
  for(const point of ['intent','preparing','sending','rate','sync']){const h=await fixture();if(point==='intent')h.storage.fail=(k,v)=>k.startsWith('posts:operation:')&&v.status==='not_started';const i=await h.issue();if(point==='intent'){assert.equal(i.response.status,503);assert.equal(i.idempotencyKey,undefined);}else{h.storage.fail=(k,v)=>point==='sync'?k==='sync':point==='rate'?k==='posts:rate':k.startsWith('posts:operation:')&&v.status===point;assert.equal((await h.submit(i)).status,503);}assert.equal(h.writes,0);}
@@ -64,7 +64,7 @@ test('tampered, oversized, future, mismatched IDs and expired tickets fail close
 test('expiry guard, 30-day alarm cleanup and auth alarm coexist without extending records',async()=>{
  const h=await fixture(),i=await h.issue(),expires=record(h,i).expiresAt;const real=Date.now;
  try{Date.now=()=>expires-119999;h.token=await h.session();assert.equal((await h.submit(i)).status,409);assert.ok(record(h,i));Date.now=()=>expires;h.storage.alarm=null;await h.object.alarm();assert.equal(record(h,i),undefined);assert.equal((await h.status(i)).status,410);}finally{Date.now=real;}
- assert.equal(h.writes,0);const second=await h.issue();const authExpiry=Date.now()+3600000;h.storage.alarm=authExpiry;await h.issue();assert.equal(h.storage.alarm,authExpiry);assert.ok(record(h,second));
+ assert.equal(h.writes,0);h.token=await h.session();const second=await h.issue();const authExpiry=Date.now()+3600000;h.storage.alarm=authExpiry;await h.issue();assert.equal(h.storage.alarm,authExpiry);assert.ok(record(h,second));
 });
 test('sessions may share owner ticket, but logout/expiry/missing auth cannot use it',async()=>{
  const h=await fixture(),i=await h.issue(),other=await h.session();assert.equal((await h.status(i,other)).status,200);const r=await h.object.fetch(new Request('https://internal/auth',{method:'POST',body:JSON.stringify({action:'logout',token:h.token})}));assert.equal(r.status,200);assert.equal((await h.submit(i)).status,401);assert.equal((await h.status(i)).status,401);assert.equal((await h.submit(i,payload(),other)).status,201);
@@ -111,8 +111,8 @@ test('internal proof tamper/wrong URL and operation signature domain cannot auth
 });
 test('session expiration during begin transaction is rechecked before quota or sending commit',async()=>{
  const real=Date.now;let t=real();Date.now=()=>t;
- try{const h=await fixture(),i=await h.issue();t=Number(h.token.split('.')[1])-1;const get=h.storage.get.bind(h.storage);let checking=false,reads=0;
- h.storage.get=async k=>{const v=await get(k);if(checking&&k==='sessions'&&++reads===2)t++;return v;};
+ try{const h=await fixture(),i=await h.issue();t=Number(h.token.split('.')[2])-1;const get=h.storage.get.bind(h.storage);let checking=false,reads=0;
+ h.storage.get=async k=>{const v=await get(k);if(checking&&k==='auth:oauth2:sessions'&&++reads===2)t++;return v;};
  h.env.AUTH_STATE.get=()=>({fetch:async r=>{const p=await r.clone().json();if(p.action==='post.begin')checking=true;return h.object.fetch(r);}});
  assert.equal((await h.submit(i)).status,401);assert.equal(h.writes,0);assert.equal(h.storage.data.get('posts:rate'),undefined);assert.equal(record(h,i).status,'preparing');}finally{Date.now=real;}
 });

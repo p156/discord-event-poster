@@ -1,15 +1,16 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import worker,{AuthState,passwordHash} from '../src/index.mjs';
+import worker,{AuthState} from '../src/index.mjs';
 const origin='https://poster.example';
-const password='TEST_ONLY_password';
+import {TestStorage} from './post-fixtures.mjs';
+import {oauthBindings,mockLogin,discordOAuthMock,startFlow} from './oauth-fixtures.mjs';
 const names=['周遊型','ホール型','ルーム型','オンライン','持ち帰り','イマーシブ','謎解き','ホラー'];
 async function setup(){
- const map=new Map();const storage={get:async k=>structuredClone(map.get(k)),put:async(k,v)=>map.set(k,structuredClone(v)),delete:async k=>map.delete(k),setAlarm:async()=>{},transaction:async fn=>fn(storage),sync:async()=>{}};
- const env={ALLOWED_ORIGIN:origin,DISCORD_BOT_TOKEN:'TEST_ONLY_BOT',DISCORD_FORUM_CHANNEL_ID:'123',APP_PASSWORD_HASH:'pbkdf2-sha256$600000$'+'ab'.repeat(16)+'$'+await passwordHash(password,'ab'.repeat(16)),SESSION_SIGNING_KEY:'c'.repeat(64)};
+ const storage=new TestStorage(),map=storage.data;
+ const env={...oauthBindings(origin),DISCORD_BOT_TOKEN:'TEST_ONLY_BOT',DISCORD_FORUM_CHANNEL_ID:'123',SESSION_SIGNING_KEY:'c'.repeat(64)};
  const object=new AuthState({storage},env);env.AUTH_STATE={idFromName:()=>0,get:()=>({fetch:r=>object.fetch(r)})};
  const call=(path,method='GET',body,token,requestOrigin=origin)=>worker.fetch(new Request('https://discord-event-poster-api.monma5435.workers.dev'+path,{method,headers:{Origin:requestOrigin,'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},...(body?{body:JSON.stringify(body)}:{})}),env);
- const login=async()=>{const r=await call('/api/login','POST',{password});assert.equal(r.status,200);return r.json();};return {env,object,map,call,login};
+ const login=async()=>{const real=globalThis.fetch;try{globalThis.fetch=discordOAuthMock;return await mockLogin((url,opts)=>worker.fetch(new Request(url,opts),env),origin);}finally{globalThis.fetch=real;}};return {env,object,map,call,login};
 }
 test('signed sessions: tamper, expiration, logout replay and cross-instance revocation',async()=>{
  const h=await setup(),s=await h.login();assert.equal((await h.call('/api/session','GET',null,s.token)).status,200);
@@ -19,17 +20,18 @@ test('signed sessions: tamper, expiration, logout replay and cross-instance revo
  assert.equal((await h.call('/api/session','GET',null,s.token)).status,401);
  const s2=await h.login();const real=Date.now;try{Date.now=()=>s2.expiresAt+1;assert.equal((await h.call('/api/session','GET',null,s2.token)).status,401);}finally{Date.now=real;}
 });
-test('shared global limit serializes concurrent attempts and survives object recreation',async()=>{
- const h=await setup();const results=await Promise.all(Array.from({length:7},()=>h.call('/api/login','POST',{password:'wrong'})));
- assert.equal(results.filter(r=>r.status===401).length,5);assert.equal(results.filter(r=>r.status===429).length,2);
- const other=new AuthState({storage:h.object.storage},h.env);h.env.AUTH_STATE.get=()=>({fetch:r=>other.fetch(r)});assert.equal((await h.call('/api/login','POST',{password})).status,429);
+test('shared OAuth start limit survives object recreation',async()=>{
+ const h=await setup(),dispatch=(url,opts)=>worker.fetch(new Request(url,opts),h.env);
+ await Promise.all(Array.from({length:20},()=>startFlow(dispatch,origin)));
+ const other=new AuthState({storage:h.object.storage},h.env);h.env.AUTH_STATE.get=()=>({fetch:r=>other.fetch(r)});
+ const r=await dispatch('https://discord-event-poster-api.monma5435.workers.dev/api/oauth/start',{method:'POST',headers:{Origin:origin,'Content-Type':'application/x-www-form-urlencoded'},body:'challenge='+'e'.repeat(64)});assert.equal(r.status,429);
 });
 test('Origin, missing secrets, unknown proxy and unauthenticated requests fail closed',async()=>{
  const h=await setup();assert.equal((await h.call('/api/forum/tags')).status,401);
- assert.equal((await h.call('/api/login','POST',{password},null,'https://evil.example')).status,403);
+ assert.equal((await h.call('/api/login','POST',{password:'TEST_ONLY'},null,'https://evil.example')).status,403);
  assert.equal((await h.call('/api/forum/tags?channel_id=999')).status,400);
  assert.equal((await h.call('/api/discord/channels/999')).status,404);
- delete h.env.SESSION_SIGNING_KEY;assert.equal((await h.call('/api/login','POST',{password})).status,503);
+ delete h.env.SESSION_SIGNING_KEY;assert.equal((await h.call('/api/session')).status,503);
 });
 test('fixed forum tags detect duplicates/missing; webhook membership; upstream sanitized',async()=>{
  const h=await setup(),s=await h.login();const real=globalThis.fetch;const calls=[];

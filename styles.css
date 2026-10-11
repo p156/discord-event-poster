@@ -7,3 +7,4 @@
 .tag-field input { width:20px; min-height:20px; }
 .tag-field label { display:flex; align-items:center; gap:6px; }
 .result .actions,.setup .actions { flex-wrap:wrap; justify-content:flex-start; }
+:root .description-field { grid-column: 1 / -1; }
