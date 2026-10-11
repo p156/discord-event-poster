@@ -1,8 +1,10 @@
 # Discord Event Poster
 
 複数の告知文を解析し、確認したイベントをDiscordフォーラムへ投稿するツールです。
-Phase 3 Step 4ではBot API投稿をローカルのモック環境へ統合しました。
-本番Workerの投稿APIは未公開で、今回の作業ではデプロイしていません。
+告知文の貼り付けによる解析、編集、プレビュー、Bot APIによる投稿に対応しています。
+公式サイトのURLから直接情報を取得・解析する機能は未実装です。
+
+本番運用を開始しています。投稿機能の有効・無効はWorker側の設定で制御します。
 
 ## 操作の流れ
 
@@ -59,16 +61,21 @@ npm run test:phase2-browser
 
 ## 投稿APIの有効化境界
 
-Workerのサーバー設定`FORUM_POSTS_ENABLED`が文字列`true`の場合だけ投稿APIを有効化します。
-未設定、false、リクエストヘッダー、URLパラメーターでは有効になりません。
+Workerのサーバー設定`FORUM_POSTS_ENABLED`は次の3モードで制御します。
+
+| 設定値 | 動作 |
+| --- | --- |
+| `true` | 投稿操作の発行・投稿POST・認証付き投稿状態GETを有効化します。 |
+| `read-only` | 投稿操作の発行・投稿POSTを無効化し、認証付き投稿状態GETのみ維持します。 |
+| `false`または未設定 | 投稿操作の発行・投稿POST・投稿状態GETを無効化します。 |
+
+リクエストヘッダーやURLパラメーターから設定を有効化することはできません。
 ローカル試験ではMiniflareのテスト用bindingで設定し、既存Wrangler設定は変更しません。
-本番で設定する作業はStep 5の検証とユーザー承認後に限ります。
+本番設定の変更は、事前に内容を確認しユーザー承認を得てから実施します。
 既存Secretの再生成や認証の無効化は不要です。
 
 詳細は[Step 4の記録](worker/docs/phase3/STEP4-RESULTS.md)、[API契約](worker/docs/phase3/API-CONTRACT.md)、[実装計画](worker/docs/phase3/IMPLEMENTATION-PLAN.md)を参照してください。
 
-Step 5で、サーバー設定`FORUM_POSTS_ENABLED=read-only`による安全な停止モードを追加しました。
-このモードでは認証付き投稿状態GETだけを維持し、操作発行・投稿POSTは404にします。
-未設定の場合は状態GETも含めて無効です。リクエスト側から設定を変更できません。
-履歴・署名鍵・Durable Objectを削除せず停止してください。
-検証結果と本番確認の残件は[Release Candidate Gate](worker/docs/phase3/STEP5-RESULTS.md)を参照してください。
+`read-only`は新規投稿を停止するためのモードですが、既に送信中の処理を取り消すことは保証しません。
+停止時も履歴・署名鍵・Durable Objectを削除しないでください。
+Step 5の検証結果は[検証記録](worker/docs/phase3/STEP5-RESULTS.md)を参照してください。
