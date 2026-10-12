@@ -8,7 +8,7 @@ const unhex=s=>Uint8Array.from(s.match(/../g),x=>parseInt(x,16));
 const b64=b=>btoa(String.fromCharCode(...b)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 async function key(secret){if(typeof secret!=='string'||secret.length<64)throw new OperationError('STATE_UNAVAILABLE',503);return crypto.subtle.importKey('raw',enc.encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign','verify']);}
 export class OperationError extends Error {constructor(code,status=400){super(code);this.code=code;this.httpStatus=status;}}
-export async function payloadHash(raw){const p=validatePostPayload(raw);return hex(await crypto.subtle.digest('SHA-256',enc.encode(JSON.stringify([1,p.threadName,p.content,p.tagIds]))));}
+export async function payloadHash(raw){const p=validatePostPayload(raw);return hex(await crypto.subtle.digest('SHA-256',enc.encode(JSON.stringify(p.apiVersion===1?[1,p.threadName,p.content,p.tagIds]:[2,p.threadName,p.content,p.tagIds,p.officialUrl,p.imageUrl]))));}
 export function canonicalClaims(c){return JSON.stringify({v:c.v,operationId:c.operationId,principal:c.principal,forumId:c.forumId,payloadHash:c.payloadHash,issuedAt:c.issuedAt,expiresAt:c.expiresAt});}
 export function validateClaims(c){
   if(!c||Object.keys(c).sort().join(',')!=='expiresAt,forumId,issuedAt,operationId,payloadHash,principal,v'||c.v!==1||typeof c.operationId!=='string'||!UUID.test(c.operationId)||c.principal!==PRINCIPAL||!isSnowflake(c.forumId)||typeof c.payloadHash!=='string'||!/^[a-f0-9]{64}$/.test(c.payloadHash)||!Number.isSafeInteger(c.issuedAt)||c.issuedAt<0||!Number.isSafeInteger(c.expiresAt)||c.expiresAt-c.issuedAt!==RETENTION_MS)throw new OperationError('INVALID_OPERATION_KEY');

@@ -1,3 +1,4 @@
+import {embedOfficialUrl} from './official-image-policy.mjs';
 // INTERNAL ONLY. Not imported by the public Worker entrypoint.
 // Step 3 must commit durable sending/quota BEFORE calling sendPreparedForumPost.
 import { PostInputError,validatePostPayload,isSnowflake } from './forum-input.mjs';
@@ -36,6 +37,7 @@ export async function sendPreparedForumPost(context){
   const {config,payload,guildId,options}=prepared;
   const body={name:payload.threadName,message:{content:payload.content,allowed_mentions:{parse:[],replied_user:false}},applied_tags:payload.tagIds};
   try{
+    if(payload.apiVersion===2){const url=embedOfficialUrl(payload.officialUrl);body.message.embeds=[{title:payload.threadName,...(url?{url}:{}),...(payload.imageUrl?{image:{url:payload.imageUrl}}:{})}];}
     const response=await sendFixedForum(config,body,options);
     if(response.status===429)return failure(new DiscordTransportError('HTTP_ERROR',429,response.rate),'write',true);
     const thread=response.body;

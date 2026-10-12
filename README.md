@@ -86,3 +86,12 @@ OAuth2移行では新しい認証専用Secretを追加します。既存Secret�
 `read-only`は新規投稿を停止するためのモードですが、既に送信中の処理を取り消すことは保証しません。
 停止時も履歴・署名鍵・Durable Objectを削除しないでください。
 Step 5の検証結果は[検証記録](worker/docs/phase3/STEP5-RESULTS.md)を参照してください。
+
+## Phase 2 公式画像とEmbed（開発ブランチ）
+
+認証済みプレビューで公式サイトのog:image、次にtwitter:imageを取得します。
+取得失敗・未許可ホストは画像なしで投稿できます。手動画像URL/アップロードはありません。
+投稿時は確認済み結果を操作レコードから使用し、公式サイトへ再接続しません。
+対応ホスト、API、SSRF境界、検証結果と限界は[Phase 2実装結果](worker/docs/PHASE2-IMAGE-RESULTS.md)を参照してください。
+画像専用検証は `npm run test:image-runtime` と `npm run test:image-browser` です。
+本番公開は未実施です。

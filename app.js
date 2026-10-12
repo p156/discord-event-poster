@@ -22,7 +22,22 @@
   function threadName(e) { return `【${e.region||"不明"}】${e.title}`; }
   function validateEvent(e) { const errors=[]; if((e.selectedTags||[]).length>5)errors.push("タグは最大5件です"); if(!e.title)errors.push("タイトルがありません"); if(threadName(e).length>100)errors.push("スレッド名が100文字を超えています"); if(contentFor(e).length>2000)errors.push("本文が2000文字を超えています"); if(e.url){try{const u=new URL(e.url);if(!/^https?:$/.test(u.protocol))errors.push("公式URLはhttp/httpsのみです")}catch{errors.push("公式URLが不正です")}} return errors; }
   function renderCards() { $("count").textContent=`${state.events.length}件`; $("cards").innerHTML=state.events.map((e,i)=>`<article class="card ${e.selected?"selected":""} ${e.duplicate?"duplicate":""}" data-id="${e.id}"><div class="card-top"><input ${(state.posting||e.operation)?"disabled":""} class="select-event" type="checkbox" ${e.selected?"checked":""} aria-label="${escapeHtml(e.title)}を投稿対象にする"><div><h3>${escapeHtml(e.title||"無題のイベント")}</h3><p class="hint">元文 ${e.raw.length}文字・状態：${e.status}</p></div></div><div class="card-grid"><label>地域<input ${(state.posting||e.operation)?"disabled":""} data-field="region" value="${escapeHtml(e.region)}"></label><label>タイトル<input ${(state.posting||e.operation)?"disabled":""} data-field="title" value="${escapeHtml(e.title)}"></label><label>開始日<input ${(state.posting||e.operation)?"disabled":""} data-field="start" value="${escapeHtml(e.start)}" placeholder="2026/10/23"></label><label>終了日<input ${(state.posting||e.operation)?"disabled":""} data-field="end" value="${escapeHtml(e.end)}" placeholder="2027/01/17"></label><label>公式URL<input ${(state.posting||e.operation)?"disabled":""} data-field="url" value="${escapeHtml(e.url)}" placeholder="https://..."></label><label>ハッシュタグ<input ${(state.posting||e.operation)?"disabled":""} data-field="tags" value="${escapeHtml(e.tags)}"></label><label class="description-field">説明<textarea ${(state.posting||e.operation)?"disabled":""} data-field="description">${escapeHtml(e.description)}</textarea></label><fieldset class="tag-field"><legend>イベントタグ（手動）</legend>${Object.keys(TAG_RULES).map(tag=>`<label><input ${(state.posting||e.operation)?"disabled":""} type="checkbox" data-tag="${tag}" ${(e.selectedTags||[]).includes(tag)?"checked":""}>${tag}</label>`).join("")}<button type="button" class="small-button auto-tag" ${(state.posting||e.operation)?"disabled":""}>本文から自動判定</button><p class="hint">${e.tagReasons?.length?`判定根拠：${e.tagReasons.map(escapeHtml).join("／")}`:"自動判定はこのボタンを押した時だけ実行します。"}</p></fieldset></div>${e.warnings.length?`<p class="warning">⚠ ${e.warnings.map(escapeHtml).join(" / ")}</p>`:""}</article>`).join(""); $("selected-count").textContent=`投稿予定 ${state.events.filter(e=>e.selected).length}件`; $("review").disabled=state.posting||!state.events.some(e=>e.selected); }
-  function renderPreview() { const selected=state.events.filter(e=>e.selected); $("preview").innerHTML=selected.map((e)=>`<article><strong>${escapeHtml(threadName(e).replace(/\r\n?/g,'\n').trim())}</strong><br><br>${escapeHtml(contentFor(e).replace(/\r\n?/g,'\n'))}<br>タグ：${escapeHtml((e.selectedTags||[]).join("・")||"なし")}</article>`).join(""); }
+  function disposeImages(){state.previewGeneration=(state.previewGeneration||0)+1;for(const e of state.events){if(e.imageBlob)URL.revokeObjectURL(e.imageBlob);e.imageBlob=null;e.imagePreview=null;}state.reviewed=null;state.previewing=false;if(!state.posting)$('post').disabled=false;}
+  async function reviewImages(){
+    const generation=(state.previewGeneration||0)+1;state.previewGeneration=generation;const before=fingerprint();state.reviewed=null;state.previewing=true;$('post').disabled=true;
+    $('confirm-panel').classList.remove('hidden');renderPreview();$('input-status').textContent='公式サイトの画像を確認中です。';
+    try{await enabledSession();const session=await client.session();if(session.capabilities?.officialImagePreview!==true||!session.capabilities?.postPayloadVersions?.includes(2))throw Object.assign(new Error(),{code:'POSTS_DISABLED'});
+      for(const e of state.events.filter(e=>e.selected&&!e.operation)){
+        const p={...payloadFor(e),apiVersion:2,officialUrl:e.url||'',imageUrl:null};let preview=await client.imagePreview(p),blob=null;
+        if(preview.imageUrl){try{blob=await client.thumbnail(preview.previewTicket);}catch(error){if(error.code!=='THUMBNAIL_UNAVAILABLE')throw error;preview=await client.imagePreview(p,preview.previewTicket);}}
+        if(generation!==state.previewGeneration||before!==fingerprint())return;
+        if(e.imageBlob)URL.revokeObjectURL(e.imageBlob);e.imageBlob=blob?URL.createObjectURL(blob):null;e.imagePreview=preview;renderPreview();
+      }
+      if(generation===state.previewGeneration&&before===fingerprint()){state.reviewed=before;$('input-status').textContent='画像を含む投稿内容を確認し、投稿ボタンを押してください。';}
+    }catch(error){if(generation===state.previewGeneration)$('auth-status').textContent=message(error.code);}
+    finally{if(generation===state.previewGeneration){state.previewing=false;$('post').disabled=state.posting;renderPreview();}}
+  }
+  function renderPreview() { const selected=state.events.filter(e=>e.selected); $("preview").innerHTML=selected.map((e)=>`<article><strong>${escapeHtml(threadName(e).replace(/\r\n?/g,'\n').trim())}</strong><br><br>${escapeHtml(contentFor(e).replace(/\r\n?/g,'\n'))}<br>タグ：${escapeHtml((e.selectedTags||[]).join("・")||"なし")}<p class="image-status" role="status">${e.imagePreview?(e.imagePreview.imageUrl?"公式画像あり":"画像なしで投稿できます"):"画像は未確認です"}</p>${e.imageBlob?`<img class="official-preview-image" alt="公式サイトの投稿画像" referrerpolicy="no-referrer" src="${escapeHtml(e.imageBlob)}">`:""}</article>`).join(""); }
 
   const client=window.PosterClient.create();
   state.history=client.operations().map((m,i)=>({id:'restored-'+m.operationId,title:'復元した操作 '+(i+1),status:'状態未確認',operation:m,error:'ログイン後、同じ操作IDで状態を確認してください。'}));
@@ -33,7 +48,7 @@
   const message=code=>messages[code]||'処理を完了できません。設定と操作状態を確認してください。';
   function fingerprint(){return JSON.stringify(state.events.filter(e=>e.selected&&!e.operation).map(e=>[e.id,threadName(e),contentFor(e),e.selectedTags]));}
   function lock(value){state.posting=value;controls.forEach(id=>$(id).disabled=value);renderCards();renderResults();}
-  function payloadFor(e){return client.normalize({threadName:threadName(e),content:contentFor(e),tagIds:appliedTagsFor(e).map(t=>t.id)});}
+  function payloadFor(e){const p=client.normalize({threadName:threadName(e),content:contentFor(e),tagIds:appliedTagsFor(e).map(t=>t.id)});return e.imagePreview?{...p,apiVersion:2,officialUrl:e.url||'',imageUrl:e.imagePreview.imageUrl,previewTicket:e.imagePreview.previewTicket}:p;}
   function allResults(){const ids=new Set(state.events.filter(e=>e.operation).map(e=>e.operation.operationId));return [...state.events.filter(e=>e.status!=='未送信'),...state.history.filter(e=>!ids.has(e.operation.operationId))];}
   function safeResult(r){if(!r||['guildId','forumId','threadId','messageId'].some(k=>!window.PosterClient.snowflake(r[k])))return null;return {guildId:r.guildId,forumId:r.forumId,threadId:r.threadId,messageId:r.messageId,url:'https://discord.com/channels/'+r.guildId+'/'+r.threadId+'/'+r.messageId};}
   function apply(e,packet){
@@ -58,10 +73,10 @@
     catch(error){showError(e,error);if(!['SESSION_REQUIRED','SESSION_EXPIRED','STORAGE_UNAVAILABLE','KEY_PAYLOAD_CONFLICT'].includes(error.code))await checkOperation(e);}
   }
   async function postSelected(){
-    if(state.posting)return;
+    if(state.posting||state.previewing)return;
     const selected=state.events.filter(e=>e.selected&&!e.operation);
     if(!selected.length){$('input-status').textContent='成功・結果不明・発行済み操作は通常の投稿ボタンで再送しません。';return;}
-    if(state.reviewed!==fingerprint()){renderPreview();state.reviewed=fingerprint();$('confirm-panel').classList.remove('hidden');$('input-status').textContent='投稿内容をプレビューで確認してから、もう一度投稿を押してください。';return;}
+    if(state.reviewed!==fingerprint()||selected.some(e=>!e.imagePreview||e.imagePreview.expiresAt<=Date.now())){await reviewImages();return;}
     const invalid=selected.flatMap(e=>validateEvent(e).map(x=>e.title+': '+x));
     const unset=selected.flatMap(e=>(e.selectedTags||[]).filter(tag=>!forumConfig?.mapping?.[tag]).map(tag=>e.title+': '+tag+'のタグIDが未設定です'));
     if(invalid.length||unset.length){alert([...invalid,...unset].join('\n'));return;}
@@ -74,8 +89,8 @@
       for(const {e,payload} of queue){
         e.payload=payload;e.status='投稿準備中';renderCards();renderResults();
         try{
-          const hash=await client.hash(payload),known=!e.forceNewOperation&&client.operations().find(m=>m.payloadHash===hash);
-          if(known){e.operation=known;await checkOperation(e);if(!e.safeToRetry||e.wait>0)continue;}
+          const hash=await client.hash({...payload,apiVersion:1}),known=!e.forceNewOperation&&client.operations().find(m=>(m.basePayloadHash||m.payloadHash)===hash);
+          if(known){e.operation=known;await checkOperation(e);e.payload=null;continue;}
           else e.operation=await client.issue(payload);
           e.status='投稿送信中';e.selected=false;renderCards();renderResults();await send(e);
           if(e.status==='認証切れ')break;
@@ -100,32 +115,33 @@
     if(button.dataset.repost){
       const original=state.events.find(x=>x.id===button.dataset.repost);if(!original)return;
       if(!confirm('「'+original.title+'」を新しい操作として再投稿します。\n既存の成功・結果不明の投稿と重複する可能性があります。Discordで確認しましたか？'))return;
-      const copy={...original,id:'event-'+crypto.randomUUID(),selected:true,status:'未送信',operation:null,payload:null,result:null,error:'',safeToRetry:false,forceNewOperation:true,selectedTags:[...(original.selectedTags||[])]};
-      state.events.forEach(x=>x.selected=false);state.events.push(copy);state.reviewed=null;renderCards();renderPreview();state.reviewed=fingerprint();$('confirm-panel').classList.remove('hidden');return;
+      const copy={...original,id:'event-'+crypto.randomUUID(),selected:true,status:'未送信',operation:null,payload:null,result:null,error:'',safeToRetry:false,forceNewOperation:true,imagePreview:null,imageBlob:null,selectedTags:[...(original.selectedTags||[])]};
+      state.events.forEach(x=>x.selected=false);state.events.push(copy);state.reviewed=null;renderCards();await reviewImages();return;
     }
     if(!e)return;lock(true);
     try{if(button.dataset.check)await checkOperation(e);else{await enabledSession();await checkOperation(e);if(e.safeToRetry&&!e.wait&&e.payload&&confirm('「'+e.title+'」を同じ操作キーで再開しますか？'))await send(e);}}
     catch(error){showError(e,error);}finally{lock(false);}
   });
-  $('parse').onclick=()=>{if(state.posting)return;for(const e of state.events)if(e.operation&&!state.history.some(h=>h.operation.operationId===e.operation.operationId))state.history.push(e);const result=runAnalysis($('source').value);state.events=result.events;state.reviewed=null;if(!state.events.length){$('input-status').textContent=result.warnings.join(' ');return;}$('results-panel').classList.remove('hidden');$('confirm-panel').classList.add('hidden');renderCards();renderResults();$('input-status').textContent=result.warnings.join(' ')||state.events.length+'件を認識しました。';};
+  $('parse').onclick=()=>{if(state.posting)return;for(const e of state.events)if(e.operation&&!state.history.some(h=>h.operation.operationId===e.operation.operationId))state.history.push(e);disposeImages();const result=runAnalysis($('source').value);state.events=result.events;state.reviewed=null;if(!state.events.length){$('input-status').textContent=result.warnings.join(' ');return;}$('results-panel').classList.remove('hidden');$('confirm-panel').classList.add('hidden');renderCards();renderResults();$('input-status').textContent=result.warnings.join(' ')||state.events.length+'件を認識しました。';};
   function edited(ev){if(state.posting||ev.type==='input'&&!ev.target.dataset.field)return;const card=ev.target.closest('.card'),e=state.events.find(x=>x.id===card?.dataset.id);if(!e||e.operation)return;
     if(ev.target.classList.contains('select-event'))e.selected=ev.target.checked;
     else if(ev.target.dataset.field)e[ev.target.dataset.field]=ev.target.value;
     else if(ev.target.dataset.tag){e.selectedTags=e.selectedTags||[];if(ev.target.checked&&e.selectedTags.length>=5&&!e.selectedTags.includes(ev.target.dataset.tag)){ev.target.checked=false;alert('タグは最大5件です');return;}e.selectedTags=ev.target.checked?[...new Set([...e.selectedTags,ev.target.dataset.tag])]:e.selectedTags.filter(x=>x!==ev.target.dataset.tag);}
-    state.reviewed=null;card.classList.toggle('selected',e.selected);$('selected-count').textContent='投稿予定 '+state.events.filter(x=>x.selected&&!x.operation).length+'件';$('review').disabled=!state.events.some(x=>x.selected&&!x.operation);
+    disposeImages();renderPreview();card.classList.toggle('selected',e.selected);$('selected-count').textContent='投稿予定 '+state.events.filter(x=>x.selected&&!x.operation).length+'件';$('review').disabled=!state.events.some(x=>x.selected&&!x.operation);
   }
   $('cards').addEventListener('change',edited);$('cards').addEventListener('input',edited);
-  $('cards').addEventListener('click',ev=>{if(state.posting||!ev.target.classList.contains('auto-tag'))return;const e=state.events.find(x=>x.id===ev.target.closest('.card').dataset.id);if(!e||e.operation)return;autoTagEvent(e);state.reviewed=null;renderCards();});
-  $('select-all').onclick=()=>{state.events.forEach(e=>e.selected=!e.operation);state.reviewed=null;renderCards();};
-  $('clear-all').onclick=()=>{state.events.forEach(e=>e.selected=false);state.reviewed=null;renderCards();};
-  $('review').onclick=()=>{renderPreview();state.reviewed=fingerprint();$('confirm-panel').classList.remove('hidden');window.scrollTo({top:$('confirm-panel').offsetTop-20,behavior:'smooth'});};
+  $('cards').addEventListener('click',ev=>{if(state.posting||!ev.target.classList.contains('auto-tag'))return;const e=state.events.find(x=>x.id===ev.target.closest('.card').dataset.id);if(!e||e.operation)return;autoTagEvent(e);disposeImages();renderCards();});
+  $('select-all').onclick=()=>{state.events.forEach(e=>e.selected=!e.operation);disposeImages();renderCards();};
+  $('clear-all').onclick=()=>{state.events.forEach(e=>e.selected=false);disposeImages();renderCards();};
+  $('review').onclick=async()=>{await reviewImages();window.scrollTo({top:$('confirm-panel').offsetTop-20,behavior:'smooth'});};
   $('back').onclick=()=>$('confirm-panel').classList.add('hidden');
   $('post').onclick=postSelected;
   $('worker-login').onclick=async()=>{if(state.posting)return;lock(true);try{forumConfig=null;await client.login();const s=await client.session();$('auth-status').textContent='ログインしました（有効期限1時間・延長なし）。'+(s.capabilities?.forumPosts?'':' 本番投稿機能はまだ公開されていません。');for(const e of allResults().filter(x=>x.operation))await checkOperation(e);}catch{$('auth-status').textContent='Discordログインできませんでした。本人のアカウント・ポップアップ許可・設定・端末保存を確認してやり直してください。';}finally{lock(false);}};
-  $('worker-logout').onclick=async()=>{if(state.posting)return;lock(true);try{await client.logout();forumConfig=null;$('auth-status').textContent='ログアウトしました。操作キーはこのタブに保持し、再ログイン後に照会できます。';}catch{$('auth-status').textContent='サーバーでの失効を確認できません。再試行してください。';}finally{lock(false);}};
-  $('fetch-tags').onclick=async()=>{if(state.posting)return;lock(true);forumConfig=null;try{const r=await client.tags(),data=r.data;if(!r.ok||!window.PosterClient.snowflake(data.forumId)||!data.mapping||Object.entries(data.mapping).some(([name,id])=>!TAG_RULES[name]||!window.PosterClient.snowflake(id)))throw Object.assign(new Error(),{code:r.status===429?'DISCORD_RATE_LIMITED':'TAG_INVALID'});forumConfig=data;$('auth-status').textContent='タグを取得しました。'+(data.missing?.length?' 未登録：'+data.missing.join('・'):'')+(data.duplicates?.length?' 重複：'+data.duplicates.join('・'):'');}catch(error){$('auth-status').textContent=message(error.code);}finally{lock(false);}};
+  $('worker-logout').onclick=async()=>{if(state.posting)return;lock(true);try{await client.logout();disposeImages();renderPreview();forumConfig=null;$('auth-status').textContent='ログアウトしました。操作キーはこのタブに保持し、再ログイン後に照会できます。';}catch{$('auth-status').textContent='サーバーでの失効を確認できません。再試行してください。';}finally{lock(false);}};
+  $('fetch-tags').onclick=async()=>{if(state.posting)return;lock(true);forumConfig=null;try{const r=await client.tags(),data=r.data;if(!r.ok||!window.PosterClient.snowflake(data.forumId)||!data.mapping||Object.entries(data.mapping).some(([name,id])=>!TAG_RULES[name]||!window.PosterClient.snowflake(id)))throw Object.assign(new Error(),{code:r.status===429?'DISCORD_RATE_LIMITED':'TAG_INVALID'});disposeImages();forumConfig=data;$('auth-status').textContent='タグを取得しました。'+(data.missing?.length?' 未登録：'+data.missing.join('・'):'')+(data.duplicates?.length?' 重複：'+data.duplicates.join('・'):'');}catch(error){$('auth-status').textContent=message(error.code);}finally{lock(false);}};
   try{localStorage.removeItem(STORE);}catch{$('input-status').textContent='旧保存URLを削除できません。サイトデータから削除してください。新バージョンでは利用しません。';}
   if(!client.storageReady())$('input-status').textContent='操作情報の保存を利用できません。投稿は停止します。';
+  window.addEventListener?.('pagehide',disposeImages);
   renderResults();
   if(state.history.length)client.session().then(async()=>{for(const e of state.history)await checkOperation(e);}).catch(()=>{});
   window.EventPoster={splitEvents,extractLinks,parsePeriod,runAnalysis,autoTagEvent,appliedTagsFor,contentFor,validateEvent,MAX_TAGS,TAG_RULES};

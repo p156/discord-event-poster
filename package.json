@@ -3,13 +3,15 @@
   "version": "0.2.0",
   "private": true,
   "scripts": {
-    "test": "node tests-v010.js && node --test tests-acceptance.cjs tests/legacy-webhook-acceptance.cjs worker/tests/security.test.mjs worker/tests/oauth.test.mjs worker/tests/forum-posts.test.mjs worker/tests/post-state.test.mjs worker/tests/step4.test.mjs worker/tests/release-gate.test.mjs",
+    "test": "node tests-v010.js && node --test tests-acceptance.cjs tests/legacy-webhook-acceptance.cjs worker/tests/security.test.mjs worker/tests/oauth.test.mjs worker/tests/forum-posts.test.mjs worker/tests/post-state.test.mjs worker/tests/step4.test.mjs worker/tests/release-gate.test.mjs worker/tests/image-preview.test.mjs",
     "test:browser": "node tests/browser-acceptance.cjs",
     "test:phase2-browser": "node tests/legacy-phase2-browser.cjs",
     "test:legacy-browser": "node tests/legacy-webhook-browser.cjs",
     "test:worker-runtime": "node worker/tests/runtime.mjs",
     "test:post-runtime": "node worker/tests/post-runtime.mjs",
-    "test:migration-runtime": "node worker/tests/oauth-migration-runtime.mjs"
+    "test:migration-runtime": "node worker/tests/oauth-migration-runtime.mjs",
+    "test:image-runtime": "node worker/tests/image-runtime.mjs",
+    "test:image-browser": "node tests/image-browser.cjs"
   },
   "devDependencies": {
     "esbuild": "0.28.2",

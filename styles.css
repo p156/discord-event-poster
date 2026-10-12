@@ -8,3 +8,6 @@
 .tag-field label { display:flex; align-items:center; gap:6px; }
 .result .actions,.setup .actions { flex-wrap:wrap; justify-content:flex-start; }
 :root .description-field { grid-column: 1 / -1; }
+
+.official-preview-image { display:block; max-width:100%; max-height:320px; object-fit:contain; margin-top:12px; }
+.image-status { white-space:normal; font-size:.9rem; }

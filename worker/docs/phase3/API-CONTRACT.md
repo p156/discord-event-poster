@@ -275,3 +275,9 @@ Webhook入力/保存/参照/直送はStep 4撤去。旧Webhook削除はStep 6の
 [mentions](https://docs.discord.com/developers/resources/message) /
 [rate](https://docs.discord.com/developers/topics/rate-limits)。
 署名操作・30日・10件/分・UTF-16/16KiBは本アプリ契約でありDiscord公式が定めたものではない。
+
+## Phase 2 開発ブランチ追記
+
+v1契約を維持したまま、署名確認票による投稿payload v2と認証済み画像preview/thumbnailを追加しました。
+新しいAPI、入力、確認票の一度消費、保存スナップショット、ホスト境界は[Phase 2現行契約と検証](../PHASE2-IMAGE-RESULTS.md)を参照してください。
+operationTicketと状態応答のバージョンは引き続きv1です。Worker/Pagesの本番公開は未実施です。

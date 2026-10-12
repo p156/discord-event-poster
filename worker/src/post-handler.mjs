@@ -1,3 +1,5 @@
+import {validateIntent} from './image-preview-handler.mjs';
+import {verifyPreview,matchPreview} from './image-preview-ticket.mjs';
 // Routed only behind the server-side FORUM_POSTS_ENABLED gate.
 import {hasAllowedHost} from './request-boundary.mjs';
 import {readPostRequest,PostInputError} from './forum-input.mjs';
@@ -39,8 +41,9 @@ export function createPostHandler({fetchImpl,timeoutMs}={}){
       await call(env,{action:'check',token},false);
       if(intent){
         if(request.headers.has('Idempotency-Key'))throw new OperationError('INVALID_REQUEST');
-        const p=await readPostRequest(request);fixedDiscordConfig(env);
-        const {claims:c}=await call(env,{action:'post.issue',token,payloadHash:await payloadHash(p)});
+        const {payload:p,previewTicket}=await readPostRequest(request,{validate:validateIntent});fixedDiscordConfig(env);
+        const preview=p.apiVersion===2?await verifyPreview(previewTicket,env.SESSION_SIGNING_KEY):null;if(preview)await matchPreview(preview,p,env);
+        const {claims:c}=await call(env,{action:'post.issue',token,payloadHash:await payloadHash(p),...(preview?{preview}:{})});
         return reply({apiVersion:1,requestId,operationId:c.operationId,idempotencyKey:await signOperation(c,env.SESSION_SIGNING_KEY),issuedAt:new Date(c.issuedAt).toISOString(),expiresAt:new Date(c.expiresAt).toISOString(),payloadHash:c.payloadHash,status:'not_started'},201,origin,{Location:'/api/forum/posts/'+c.operationId});
       }
       claims=await verifyOperation(request.headers.get('Idempotency-Key'),env.SESSION_SIGNING_KEY);
@@ -48,11 +51,13 @@ export function createPostHandler({fetchImpl,timeoutMs}={}){
       const p=await readPostRequest(request);
       if(await payloadHash(p)!==claims.payloadHash)throw new OperationError('KEY_PAYLOAD_CONFLICT',409);
       const current=await call(env,{action:'post.inspect',token,claims});
+      if(p.apiVersion===2&&(current.payloadVersion!==2||current.imageSnapshot?.officialUrl!==p.officialUrl||current.imageSnapshot?.imageUrl!==p.imageUrl))throw new OperationError('KEY_PAYLOAD_CONFLICT',409);
+      const frozenPayload=p.apiVersion===2?{...p,officialUrl:current.imageSnapshot.officialUrl,imageUrl:current.imageSnapshot.imageUrl}:p;
       if(['not_started','retryable'].includes(current.record.status)&&claims.expiresAt-Date.now()<120000)throw new OperationError('OPERATION_EXPIRING',409);
       if(!['not_started','retryable'].includes(current.record.status)||!current.record.safeToRetry)return stateReply(current,requestId,origin);
       if(claims.forumId!==env.DISCORD_FORUM_CHANNEL_ID)throw new OperationError('TARGET_CHANGED',409);
       if(claims.expiresAt-Date.now()<120000)throw new OperationError('OPERATION_EXPIRING',409);
-      const prepared=await prepareForumPost(env,p,{fetchImpl:createDiscordFetch(env,token,fetchImpl),timeoutMs});
+      const prepared=await prepareForumPost(env,frozenPayload,{fetchImpl:createDiscordFetch(env,token,fetchImpl),timeoutMs});
       if(prepared.outcome!=='prepared'){const answer=await call(env,{action:'post.preflight-failure',token,claims,failure:{code:prepared.code==='FORUM_RESPONSE_INVALID'?'SERVICE_UNAVAILABLE':prepared.code,safeToRetry:prepared.safeToRetry,httpStatus:prepared.httpStatus,retry:prepared.retry}});return stateReply(answer,requestId,origin,prepared.httpStatus);}
       const reserved=await call(env,{action:'post.reserve',token,claims});
       if(!reserved.leaseId)return stateReply(reserved,requestId,origin);

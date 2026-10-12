@@ -33,8 +33,8 @@ function validUnicode(text){
 }
 export function validatePostPayload(value) {
   if(!value||typeof value!=='object'||Array.isArray(value)||![Object.prototype,null].includes(Object.getPrototypeOf(value)))throw new PostInputError();
-  const allowed=['apiVersion','threadName','content','tagIds'];
-  if(Object.keys(value).some(k=>!allowed.includes(k))||value.apiVersion!==1)throw new PostInputError();
+  const allowed=['apiVersion','threadName','content','tagIds',...(value.apiVersion===2?['officialUrl','imageUrl']:[])];
+  if(Object.keys(value).some(k=>!allowed.includes(k))||![1,2].includes(value.apiVersion))throw new PostInputError();
   for(const name of ['threadName','content'])if(typeof value[name]!=='string')throw new PostInputError('INVALID_REQUEST',400,[name]);
   const name=value.threadName.replace(/\r\n?/g,'\n'),content=value.content.replace(/\r\n?/g,'\n');
   const threadName=name.trim();
@@ -42,12 +42,17 @@ export function validatePostPayload(value) {
   if(!validUnicode(content)||/[\x00-\x08\x0b-\x1f\x7f]/.test(content)||!content.trim()||content.length>2000)throw new PostInputError('CONTENT_INVALID',422,['content']);
   const tagIds=value.tagIds===undefined?[]:value.tagIds;
   if(!Array.isArray(tagIds)||tagIds.length>5||tagIds.some(t=>!isSnowflake(t))||new Set(tagIds).size!==tagIds.length)throw new PostInputError('TAG_INVALID',422,['tagIds']);
-  return Object.freeze({apiVersion:1,threadName,content,tagIds:Object.freeze([...tagIds].sort())});
+  const extra={};
+  if(value.apiVersion===2){
+    for(const k of ['officialUrl','imageUrl'])if((k==='imageUrl'&&value[k]===null))continue;else if(typeof value[k]!=='string'||value[k].length>2048||!validUnicode(value[k])||/[\x00-\x20\x7f]/.test(value[k]))throw new PostInputError();
+    extra.officialUrl=value.officialUrl;extra.imageUrl=value.imageUrl;
+  }
+  return Object.freeze({apiVersion:value.apiVersion,threadName,content,tagIds:Object.freeze([...tagIds].sort()),...extra});
 }
-export async function readPostRequest(request,{timeoutMs=5000}={}) {
+export async function readPostRequest(request,{timeoutMs=5000,validate=validatePostPayload}={}) {
   if(!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers.get('Content-Type')||'')||request.headers.has('Content-Encoding'))throw new PostInputError('UNSUPPORTED_MEDIA',415);
   const reader=request.body?.getReader();if(!reader)throw new PostInputError();let timer;
   const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{void reader.cancel().catch(()=>{});reject(new PostInputError('BODY_TIMEOUT',408));},timeoutMs);});
-  const task=(async()=>{let size=0;const chunks=[];while(true){const {value,done}=await reader.read();if(done)break;size+=value.length;if(size>POST_BODY_LIMIT){void reader.cancel().catch(()=>{});throw new PostInputError('BODY_TOO_LARGE',413);}chunks.push(value);}const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}let text;try{text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);}catch{throw new PostInputError();}return validatePostPayload(parseStrictJson(text));})();
+  const task=(async()=>{let size=0;const chunks=[];while(true){const {value,done}=await reader.read();if(done)break;size+=value.length;if(size>POST_BODY_LIMIT){void reader.cancel().catch(()=>{});throw new PostInputError('BODY_TOO_LARGE',413);}chunks.push(value);}const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}let text;try{text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);}catch{throw new PostInputError();}return validate(parseStrictJson(text));})();
   try{return await Promise.race([task,timeout]);}catch(error){if(error instanceof PostInputError)throw error;throw new PostInputError();}finally{clearTimeout(timer);try{reader.releaseLock();}catch{}}
 }

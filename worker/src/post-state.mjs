@@ -1,3 +1,4 @@
+import {consumePreview} from './image-preview-state.mjs';
 import {RETENTION_MS,PRINCIPAL,OperationError,canonicalClaims,validateClaims} from './post-keys.mjs';
 import {isSnowflake} from './forum-input.mjs';
 import {cooldownWait} from './discord-cooldown-state.mjs';
@@ -32,8 +33,8 @@ export async function postState(storage,env,input,now=Date.now()){
   if(now<c.issuedAt)throw new OperationError('INVALID_OPERATION_KEY');
   if(input.action==='post.issue'){
     if(c.principal!==PRINCIPAL||c.forumId!==env.DISCORD_FORUM_CHANNEL_ID||c.expiresAt-c.issuedAt!==RETENTION_MS)throw new OperationError('TARGET_CHANGED',409);
-    const r={claims:c,operationId:c.operationId,createdAt:c.issuedAt,updatedAt:c.issuedAt,expiresAt:c.expiresAt,status:'not_started',attempt:0,safeToRetry:true,nextAllowedAt:0,leaseId:null,result:null,error:null};
-    await storage.transaction(async tx=>{if(await tx.get(recordKey(c.operationId)))throw new OperationError('INVALID_OPERATION_KEY');await tx.put(recordKey(c.operationId),r);await tx.put(expiryKey(r),r.operationId);});
+    const r={...(input.preview?{imageSnapshot:{officialUrl:input.preview.officialUrl,imageUrl:input.preview.imageUrl,source:input.preview.source},payloadVersion:2}:{}),claims:c,operationId:c.operationId,createdAt:c.issuedAt,updatedAt:c.issuedAt,expiresAt:c.expiresAt,status:'not_started',attempt:0,safeToRetry:true,nextAllowedAt:0,leaseId:null,result:null,error:null};
+    await storage.transaction(async tx=>{if(input.preview)await consumePreview(tx,env,input.token,input.preview,Date.now());if(await tx.get(recordKey(c.operationId)))throw new OperationError('INVALID_OPERATION_KEY');await tx.put(recordKey(c.operationId),r);await tx.put(expiryKey(r),r.operationId);});
     await scheduleEarlier(storage,r.expiresAt);await storage.sync();return {record:view(r,now,false),claims:c};
   }
   const answer=await storage.transaction(async tx=>{
@@ -47,7 +48,7 @@ export async function postState(storage,env,input,now=Date.now()){
     if(input.action==='post.inspect'){
       const cooldown=await cooldownWait(tx,{route:'POST channel/threads',major:'channel:'+c.forumId},now);
       if(['not_started','retryable'].includes(r.status)&&cooldown){r.nextAllowedAt=Math.max(r.nextAllowedAt||0,now+cooldown.retryAfterSeconds*1000);r.error=error('DISCORD_RATE_LIMITED');}
-      await tx.put(key,r);return {record:view(r,now)};
+      await tx.put(key,r);return {record:view(r,now),...(r.payloadVersion===2?{imageSnapshot:r.imageSnapshot,payloadVersion:2}:{})};
     }
     if(input.action==='post.reserve'){
       if(!['not_started','retryable'].includes(r.status)||r.safeToRetry===false)return {record:view(r,now)};
