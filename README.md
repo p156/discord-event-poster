@@ -95,3 +95,11 @@ Step 5の検証結果は[検証記録](worker/docs/phase3/STEP5-RESULTS.md)を�
 対応ホスト、API、SSRF境界、検証結果と限界は[Phase 2実装結果](worker/docs/PHASE2-IMAGE-RESULTS.md)を参照してください。
 画像専用検証は `npm run test:image-runtime` と `npm run test:image-browser` です。
 本番公開は未実施です。
+
+## OAuth2公開前の検証ツール
+
+公開候補の固定と本番設定の読み取り検査には、`npm run release:gate` を使用します。
+このツールに本番書き込み経路はなく、`prepare`、`verify`、`preflight` のみを受け付けます。
+検証は `npm run test:release-gate` です。
+実行方法と公開時の承認範囲は[OAuth2公開と復旧の手順](worker/docs/OAUTH2-RELEASE-RUNBOOK.md)を参照してください。
+旧Stage 1の公開ツールは当時の設定を固定した履歴として保持し、今回の公開には使用しません。

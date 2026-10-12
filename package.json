@@ -11,7 +11,9 @@
     "test:post-runtime": "node worker/tests/post-runtime.mjs",
     "test:migration-runtime": "node worker/tests/oauth-migration-runtime.mjs",
     "test:image-runtime": "node worker/tests/image-runtime.mjs",
-    "test:image-browser": "node tests/image-browser.cjs"
+    "test:image-browser": "node tests/image-browser.cjs",
+    "test:release-gate": "node --test worker/tests/oauth2-release-gate.test.cjs",
+    "release:gate": "node worker/tools/oauth2-release-gate.cjs"
   },
   "devDependencies": {
     "esbuild": "0.28.2",
