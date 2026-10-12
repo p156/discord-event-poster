@@ -63,7 +63,7 @@ npm run test:release-gate
 | 既存npm test | PASS 141 / FAIL 0、parserもPASS |
 | ステージング追加検査 | PASS 13 / FAIL 0 |
 | 生成bundleのworkerd／SQLite | PASS：Host／Origin拒否、投稿・画像停止、旧login拒否、DO認証、OAuth開始303と固定Redirect・identify |
-| 本番公開ガード19検査 | cleanコミットで最終再実行する。実装中は未追跡ファイルを安全に拒否し17 PASS / 2 FAIL |
+| 本番公開ガード19検査 | cleanコミットでPASS 19 / FAIL 0。実装中の17 PASS / 2 FAILは未追跡ファイルの拒否で、ガードを緩和せず解消 |
 | 実API初期作成、実candidate取得、実停止復旧 | NOT TESTED |
 | 実OAuth完了、実画像・投稿、実CPU／heap | NOT TESTED |
 
