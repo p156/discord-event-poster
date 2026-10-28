@@ -237,3 +237,43 @@ Secret登録・交換、候補upload、切替は今回実行していない。
 
 仕様確認: [SecretsとVersion upload](https://developers.cloudflare.com/workers/configuration/secrets/)、[Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)。
 2026-10-16にContext7で参照したが、本番API応答・安全性の実測を代替しない。
+
+## 2026-10-28の準備確認
+
+調査開始時の開発HEADとremoteは `538d82396ce7e2f7b22d123cf58b00c45d48b7f4`、mainは `7ad417f37a6ddb9bd9bf9621c651a8dd89b8883a` で一致した。
+GitHub Pages APIはmain/root、HTTPS強制、latest build commitも同mainを返した。
+公開4assetはすべてHTTP200でmainとバイト一致し、OAuth候補とは不一致だった。
+
+管理画面ではactive Version `43425306-e017-4b90-ba93-9a70733ce59b`、100%、FORUM_POSTS_ENABLED=trueを再確認した。
+既存5Secretのみ存在し、新OAuth2の5名は未登録だった。
+Logs有効、起動ログ収集と保存有効、sampling100%、Traces無効だった。
+AUTH_STATEは既存namespaceのdiscord-event-poster-api_AuthStateを参照し、Bound Worker一致、SQLを確認した。
+Discord ApplicationのOAuth2 Redirectは未登録、Client Secretは非表示のまま扱った。
+Applicationと稼働Bot Tokenの対応、暗号化されたforum IDとの一致、対象forumの実効権限は未確認である。
+
+管理API用の環境変数が無いため、API latestVersion、Deployment UUID、全module hash、migration metadata、実効Worker/DO limitsは未確認である。
+資格情報ファイルの探索やrefresh、Global Keyへのfallbackは行っていない。
+画面の最上位VersionをAPI latestとして期待値ファイルへ転記していない。
+inspect/preflightの本番実行と停止操作は行っていない。
+
+公式Workers Logs文書はinvocation logにmethodとURLが含まれることと、`observability.logs.invocation_logs=false`で無効化できることを示す。
+これは当該本番metadataの確認を代替しない。
+次回はLogs全停止を既定にせず、診断ログを維持しながらinvocation logを無効にする案について、完全metadataとtail/Logpush/trace経路を照合し、変更差分を別承認へ提示する。
+現在のenabled=false必須ガードを緩めてLogs有効候補を通す変更はしていない。
+
+`verifyRecoveryPair(expectedRecovery,actualRecovery,expectedTrial,actualTrial)`を追加した。
+両版の独立した完全読み戻しをそれぞれ照合し、別々の完全UUID、read-only/trueの向き、同一bundle、DO、Secret名、settingsを検査する。
+modeとVersion ID以外の差分は拒否する。
+これは正規化済み証拠の検査だけで、API adapter、Secret値同一性の証明、本番の復旧成功を実装したものではない。
+既存鍵の維持には実upload metadataのinherit検査と変更操作の監査も必要になる。
+true候補の生成経路は依然として未接続であり、productionGoはfalseのままである。
+
+本番操作の順序は、旧版受付停止Sを100%反映して確認、Redirect登録と新5Secretを含むOAuth停止候補upload、候補の完全読み戻し、OAuth停止版Rを100%反映、main更新によるPages配信、停止中の認証試験、別承認のtrue版Tと最大2投稿の順とする。
+P1前に現行bundleの完全一致と停止版Sの生成方法を確定し、P6前にR/Tの読み戻しとRへの単発切替経路を確定する。
+試験終了時はRへ戻し、通常運用は別承認とする。
+現時点ではS/R/Tの完全Version IDを作成しておらず、実行可能性は未検証なので、本番操作はNO-GOである。
+
+Cloudflare通常ログイン中に、UIツールが認証情報を含む一時遷移URLを自動出力した。
+その値は再掲せず、リポジトリや証拠ファイルに保存していない。
+以後は認証遷移中の画面取得を避けた。
+Worker Secretsの値取得、PortalのSecret再生成、設定保存、upload/deploy、main変更、実OAuth、実Discord投稿、削除、プラン変更は行っていない。

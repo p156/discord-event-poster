@@ -19,3 +19,15 @@ test('OAuth input accepts only new five names and exact callback, never replacem
 test('timeout aborts once, keeps durable unknown and cannot resend',async()=>{
  const journal=path.join(fs.mkdtempSync(path.join(os.tmpdir(),'poster-attempt-')),'attempt.json');let calls=0,signal;const o={journal,operationSha256:'c'.repeat(64),timeoutMs:5,send:s=>{calls++;signal=s;return new Promise(()=>{});}};await assert.rejects(()=>p.singleAttempt(o),/OUTCOME_UNKNOWN/);assert.equal(signal.aborted,true);await assert.rejects(()=>p.singleAttempt(o));assert.equal(calls,1);
 });
+test('trial requires independently verified recovery with identical code, DO, secrets and settings',()=>{
+ const r={versionId:'11111111-1111-4111-8111-111111111111',bundleSha256:'a'.repeat(64),namespaceId:'b'.repeat(32),className:'AuthState',sqlite:true,migrationTag:'auth-v1',mode:'read-only',settings:{observability:{enabled:false},limits:{cpu_ms:50}},secretNames:[...g.REQUIRED,'APP_PASSWORD_HASH']};
+ const t={...structuredClone(r),versionId:'22222222-2222-4222-8222-222222222222',mode:'true'};
+ assert.equal(p.verifyRecoveryPair(r,r,t,t).productionGo,false);
+ for(const patch of [{bundleSha256:'c'.repeat(64)},{namespaceId:'c'.repeat(32)},{settings:{observability:{enabled:false},limits:{cpu_ms:51}}},{secretNames:[...g.REQUIRED,'APP_PASSWORD_HASH','EXTRA']}]){
+  const changed={...structuredClone(t),...patch};assert.throws(()=>p.verifyRecoveryPair(r,r,changed,changed),/RECOVERY_PAIR_CHANGED/);
+ }
+ assert.throws(()=>p.verifyRecoveryPair(r,r,t,{...t,bundleSha256:'d'.repeat(64)}),/CANDIDATE_READBACK_CHANGED/);
+ assert.throws(()=>p.verifyRecoveryPair(r,r,r,r),/RECOVERY_PAIR_INVALID/);
+ assert.throws(()=>p.verifyRecoveryPair(t,t,r,r),/RECOVERY_PAIR_INVALID/);
+ const sameId={...t,versionId:r.versionId};assert.throws(()=>p.verifyRecoveryPair(r,r,sameId,sameId),/RECOVERY_PAIR_INVALID/);
+});

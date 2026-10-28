@@ -18,6 +18,14 @@ function verifyCandidate(expected,actual){
  gate.equal(actual,expected,'CANDIDATE_READBACK_CHANGED');return {verified:true,productionGo:false};
 }
 function switchPayload(versionId){if(!UUID.test(versionId))stop('VERSION_INCOMPLETE');return {strategy:'percentage',versions:[{version_id:versionId,percentage:100}]};}
+function verifyRecoveryPair(expectedRecovery,actualRecovery,expectedTrial,actualTrial){
+ // Independent complete readbacks are required for BOTH versions before a trial.
+ verifyCandidate(expectedRecovery,actualRecovery);verifyCandidate(expectedTrial,actualTrial);
+ if(actualRecovery.mode!=='read-only'||actualTrial.mode!=='true'||actualRecovery.versionId===actualTrial.versionId)stop('RECOVERY_PAIR_INVALID');
+ const shared=({versionId,mode,...rest})=>rest;
+ gate.equal(shared(actualRecovery),shared(actualTrial),'RECOVERY_PAIR_CHANGED');
+ return {verified:true,recoveryVersionId:actualRecovery.versionId,trialVersionId:actualTrial.versionId,productionGo:false};
+}
 async function singleAttempt({journal,operationSha256,send,timeoutMs=10000}){
  if(!/^[a-f0-9]{64}$/.test(operationSha256)||typeof send!=='function'||!Number.isSafeInteger(timeoutMs)||timeoutMs<1||timeoutMs>10000)stop('ATTEMPT_INVALID');
  // Exclusive durable reservation BEFORE any send. A crash or unknown outcome consumes the attempt.
@@ -27,4 +35,4 @@ async function singleAttempt({journal,operationSha256,send,timeoutMs=10000}){
  // Deliberately keep unknown until an independently reviewed readback confirms success.
  return {status:'READBACK_REQUIRED',automaticRetry:false,productionGo:false};
 }
-module.exports={oauthBindings,verifyCandidate,switchPayload,singleAttempt};
+module.exports={oauthBindings,verifyCandidate,switchPayload,verifyRecoveryPair,singleAttempt};
