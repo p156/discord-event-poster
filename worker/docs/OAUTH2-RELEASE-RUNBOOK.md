@@ -1,5 +1,7 @@
 # OAuth2公開と復旧の手順
 
+2026-10-29追記：Ownerの非表示資格情報入力と初回metadata調査は [OWNER-READONLY-CONNECTION.md](OWNER-READONLY-CONNECTION.md) を参照する。metadata要約は公開基準や全module証拠の代用にしない。本番NO-GOを維持する。
+
 対象は `p156/discord-event-poster` の `event-poster-v2` です。
 この手順は公開前の検証を具体化したもので、公開許可ではありません。
 「mainに上げる」は本番公開として扱い、明示承認を得るまでマージしません。
