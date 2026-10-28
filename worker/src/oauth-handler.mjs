@@ -54,7 +54,10 @@ export async function handleOAuth(request,env){
   try{
     if(isCallback){
       if(request.method!=='GET'||url.origin!==new URL(env.DISCORD_OAUTH_REDIRECT_URI).origin)throw new OperationError('OAUTH_REJECTED',400);
-      if([...url.searchParams.keys()].some(k=>!['code','state','error','error_description'].includes(k))||[...url.searchParams.keys()].some(k=>url.searchParams.getAll(k).length!==1))throw new OperationError('OAUTH_REJECTED',400);
+      if([...url.searchParams.keys()].some(k=>!['code','state','error','error_description','iss'].includes(k))||[...url.searchParams.keys()].some(k=>url.searchParams.getAll(k).length!==1))throw new OperationError('OAUTH_REJECTED',400);
+      // Discord's RFC 9207 issuer is an exact identifier, not a URL to normalize or fetch.
+      // Keep issuer-less callbacks compatible with this single-provider flow.
+      if(url.searchParams.has('iss')&&url.searchParams.get('iss')!=='https://discord.com')throw new OperationError('OAUTH_REJECTED',400);
       state=url.searchParams.get('state');if(!HEX.test(state||''))throw new OperationError('OAUTH_REJECTED',400);
       clearCookie=cookie(state,'',0);
       const pairs=(request.headers.get('Cookie')||'').split(';').map(v=>v.trim()).filter(v=>v.startsWith(cookieName(state)+'='));

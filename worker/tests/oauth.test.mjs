@@ -9,6 +9,46 @@ async function setup(){const h=await fixture();h.env.FORUM_POSTS_ENABLED='true';
 async function withMock(run,mock=discordOAuthMock){const real=globalThis.fetch;globalThis.fetch=mock;try{return await run();}finally{globalThis.fetch=real;}}
 async function callback(h,flow,code='TEST_ONLY_CODE',headers={Cookie:flow.cookie}){return h.dispatch(BASE+'/api/oauth/callback?'+new URLSearchParams({state:flow.state,code}),{headers});}
 async function ticket(h,flow){const r=await callback(h,flow);assert.equal(r.status,200);return (await r.text()).match(/"handoff":"([a-f0-9]{64})"/)[1];}
+
+async function issuerCallback(h,flow,query={iss:'https://discord.com'},headers={Cookie:flow.cookie}){
+ return h.dispatch(BASE+'/api/oauth/callback?'+new URLSearchParams({state:flow.state,code:'TEST_ONLY_CODE',...query}),{headers});
+}
+test('official Discord issuer callback completes once and retains tab proof binding',()=>withMock(async()=>{
+ const h=await setup(),flow=await h.start(),r=await issuerCallback(h,flow);assert.equal(r.status,200);
+ const handoff=(await r.text()).match(/"handoff":"([a-f0-9]{64})"/)[1];
+ assert.equal((await issuerCallback(h,flow)).status,401);
+ assert.equal((await h.complete(handoff,flow.verifier)).status,200);
+ assert.equal((await h.complete(handoff,flow.verifier)).status,401);
+ const other=await h.start(),reply=await issuerCallback(h,other),ticket=(await reply.text()).match(/"handoff":"([a-f0-9]{64})"/)[1];
+ assert.equal((await h.complete(ticket,'f'.repeat(64))).status,401);
+ assert.equal((await h.complete(ticket,other.verifier)).status,401);
+}));
+test('issuer is compared exactly before state consumption or any upstream exchange',()=>withMock(async()=>{
+ const h=await setup(),flow=await h.start(),before=JSON.stringify([...h.storage.data]);
+ for(const iss of ['', 'https://evil.invalid','http://discord.com','https://discord.com/','https://DISCORD.com','https://discord.com:443','https://discord.com.evil.invalid','https://discord.com@evil.invalid','https://discord.com?x=1','https://discord.com#x',' https://discord.com','https://discord.com\n','https%3A%2F%2Fdiscord.com']){
+  const r=await issuerCallback(h,flow,{iss});assert.equal(r.status,400,JSON.stringify(iss));assert.ok(!(await r.text()).includes('handoff'));
+  assert.equal(JSON.stringify([...h.storage.data]),before);
+ }
+},()=>{assert.fail('invalid issuer must never trigger fetch');}));
+test('duplicate issuer and unknown callback fields reject before state consumption',()=>withMock(async()=>{
+ const h=await setup(),flow=await h.start(),before=JSON.stringify([...h.storage.data]);
+ for(const suffix of ['&iss=https%3A%2F%2Fdiscord.com','&iss=https%3A%2F%2Fevil.invalid','&%69ss=https%3A%2F%2Fdiscord.com','&redirect_uri=https%3A%2F%2Fevil.invalid','&extra=value','&code=other','&state='+flow.state]){
+  const query=new URLSearchParams({state:flow.state,code:'TEST_ONLY_CODE',iss:'https://discord.com'});
+  assert.equal((await h.dispatch(BASE+'/api/oauth/callback?'+query+suffix,{headers:{Cookie:flow.cookie}})).status,400);
+  assert.equal(JSON.stringify([...h.storage.data]),before);
+ }
+},()=>{assert.fail('ambiguous query must never trigger fetch');}));
+test('valid issuer never bypasses state or browser cookie validation',()=>withMock(async()=>{
+ const h=await setup(),flow=await h.start();
+ assert.equal((await issuerCallback(h,flow,undefined,{})).status,401);
+ assert.equal((await issuerCallback(h,flow,{iss:'https://discord.com',state:'f'.repeat(64)})).status,401);
+ assert.equal((await issuerCallback(h,flow,{iss:'https://discord.com',state:'invalid'})).status,400);
+},()=>{assert.fail('invalid state/cookie must never trigger fetch');}));
+test('Discord cancellation with issuer consumes the flow without exchanging code',()=>withMock(async()=>{
+ const h=await setup(),flow=await h.start();
+ assert.equal((await issuerCallback(h,flow,{iss:'https://discord.com',error:'access_denied',error_description:'Denied'})).status,400);
+ assert.equal((await issuerCallback(h,flow)).status,401);assert.equal((await h.storage.get(HANDOFF_KEY)||[]).length,0);
+},()=>{assert.fail('cancellation must never trigger fetch');}));
 test('identify only, confidential exchange, own ID, no OAuth secrets/tokens in browser packet',()=>withMock(async()=>{
  const h=await setup(),flow=await h.start();const session=await finishFlow(h.dispatch,flow,h.env.ALLOWED_ORIGIN);
  assert.match(session.token,/^oauth2\./);assert.ok(session.expiresAt>Date.now());assert.ok(session.expiresAt<=Date.now()+SESSION_MS);

@@ -11,7 +11,7 @@ export async function startFlow(dispatch,origin='https://poster.example',verifie
   return {state,cookie,verifier};
 }
 export async function finishFlow(dispatch,flow,origin='https://poster.example',code='TEST_ONLY_CODE'){
-  const r=await dispatch(BASE+'/api/oauth/callback?'+new URLSearchParams({state:flow.state,code}),{headers:{Cookie:flow.cookie}});
+  const r=await dispatch(BASE+'/api/oauth/callback?'+new URLSearchParams({state:flow.state,code,iss:'https://discord.com'}),{headers:{Cookie:flow.cookie}});
   const html=await r.text();assert.equal(r.status,200,html);const handoff=html.match(/"handoff":"([a-f0-9]{64})"/)?.[1];assert.ok(handoff);
   const complete=await dispatch(BASE+'/api/oauth/complete',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({handoff,verifier:flow.verifier})});
   assert.equal(complete.status,200);return complete.json();
