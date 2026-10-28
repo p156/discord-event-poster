@@ -74,3 +74,9 @@ test('slow response body is cancelled at the transport deadline without another 
  let calls=0,cancelled=false;const read=gate.reader(ACCOUNT,'TEST_ONLY',async()=>{calls++;return new Response(new ReadableStream({start(c){c.enqueue(new TextEncoder().encode('{'));},cancel(){cancelled=true;}}));});
  await assert.rejects(()=>read(gate.resources(ACCOUNT).account),/NETWORK_OR_TIMEOUT/);assert.equal(calls,1);assert.equal(cancelled,true);
 });
+
+test('inspection records live mode and Logs without making it release eligible',async()=>{
+ const h=setup();h.e.mode='true';h.e.settings.observability={enabled:true,logs:{enabled:true,invocation_logs:true,head_sampling_rate:1}};h.f[h.p.bindings].find(b=>b.name==='FORUM_POSTS_ENABLED').text='true';h.f[h.p.environment].script.observability=structuredClone(h.e.settings.observability);
+ const r=await gate.inspect(h.read,ACCOUNT,h.e);assert.equal(r.productionGo,false);assert.equal(r.releaseEligible,false);await assert.rejects(()=>gate.preflight(h.read,ACCOUNT,h.e));assert.throws(()=>gate.candidateConfig(gate.localConfig(),h.e));
+ assert.equal(gate.parse(['inspect','--expectations','reviewed.json']).mode,'inspect');
+});

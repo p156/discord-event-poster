@@ -193,3 +193,47 @@ DNSの実peer IP固定とDiscordが後で取得する画像bytesの同一性は�
 既存DO migrationの制約は[Durable Object migrations](https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/)を参照します。
 実行前に固定CLIのhelpと仕様を再確認し、未知の差分では停止します。
 OAuth2の固定callback、code交換、identifyは[Discord OAuth2](https://docs.discord.com/developers/topics/oauth2)に基づきます。
+
+## 2026-10-16: 稼働中の調査と公開判定の分離
+
+`inspect --expectations <reviewed.json>` を追加した。
+期待値の形式と固定GET先はpreflightと同じだが、調査に限ってmode=trueとLogs有効を記録できる。
+完全Version/latest/Deployment ID、設定、Secret名、DO等の確認値を2巡して照合する。
+出力は必ず `releaseEligible=false`、`productionGo=false`。
+prepare/preflightの停止条件は維持し、true基準やLogs有効基準を候補へ流用しない。
+未取得のAPI値をUIから推定した値で埋めない。
+
+今回のUI確認では稼働Version `43425306-e017-4b90-ba93-9a70733ce59b`、100%、FORUM_POSTS_ENABLED=true。
+Logs有効、起動ログ収集/保存有効、sampling100%、Traces無効を確認した。
+新OAuth2 Secret5名は一覧に無く、既存5名のみ。値は取得していない。
+Deployment UUID、APIのlatestVersionとの厳密な区別、全moduleのhash、実効limits/完全metadataはNOT VERIFIED。
+従って期待値ファイルを作成せず、live API preflight/inspectは実行していない。
+
+ログ設定は未解決の公開停止条件である。
+候補のfalseで現行Logsを無断停止せず、現行trueを無条件許可しない。
+OAuth callbackのcode/state/query、Authorization/Cookie、Secret、レスポンス本文を記録しない方針を先にレビューする。
+公式仕様のinvocation_logs制御と実際のAPI設定を照合し、ログ維持/変更の具体差分を別承認へ提示する。
+UIの「起動ログ」表示だけでAPI metadataのinvocation_logsと同一と断定しない。
+
+## 単発操作と候補読み戻しのローカル準備
+
+`production-release-protocol.cjs` はローカルのプロトコル部品で、live executorではない。
+CLI、既定HTTP transport、Token探索、Secret読み取り、upload/deployへの接続は持たない。
+本番応答の形式・全module読み戻し手段が未確認なので接続を有効にしない。
+
+- oauthBindings: 新5名だけを受け取り、固定callbackと値の最低条件を検査する。既存鍵の置換を拒否する。値はメモリーだけで扱い、出力/保存しない。安全な対話入力経路の本番接続はNOT TESTED。
+- singleAttempt: 操作hashだけを排他的journalに記録しfsyncしてから、注入された送信処理を一度呼ぶ。timeout/例外/成功いずれも再送は禁止。成功応答でも独立した読み戻しまでunknownを維持する。journal削除・別名・別hashで再試行しない。
+- verifyCandidate: 完全Version、bundle hash、全設定、Secret名、namespace/class/SQLite/migration/modeのレビュー済み正規化証拠と一致するか検査する。API応答の変換や全module取得を実装済みとは扱わない。
+- switchPayload: 完全UUID一件100%の切替案だけを生成する。送信はしない。
+
+本番接続を追加する前に、実multipartをassertUploadMetadataで検査し、固定Worker endpoint、直前preflight、journalと対象操作の一対一対応、timeout、応答サイズ制限、無retry、エラー本文非露出をレビューする。
+通常のwrangler secret putは使用せず、コードと新5Secretを同一の停止候補へ束ね、既存Secretをinherit/keepで保持する。
+Secret登録・交換、候補upload、切替は今回実行していない。
+
+停止候補と試行候補は同一ソース/DO/Secret/limitsを保持し、modeだけが差分になるよう個別に生成・読み戻しする。
+今回true候補のlive生成・検証経路はNOT VERIFIEDなので有効にしていない。
+復旧先は確認済みOAuth2 read-only Versionへ固定し、旧PW版へのrollbackやDO削除で代用しない。
+停止後もsendingは取り消せず、unknownは同じ操作キーで照会し、Discordを人が確認する。新キーでの再送は禁止。
+
+仕様確認: [SecretsとVersion upload](https://developers.cloudflare.com/workers/configuration/secrets/)、[Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)。
+2026-10-16にContext7で参照したが、本番API応答・安全性の実測を代替しない。

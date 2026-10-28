@@ -8,13 +8,25 @@
   const states=['not_started','preparing','sending','succeeded','retryable','failed','unknown','expired','unconfirmed'];
   const snowflake=s=>typeof s==='string'&&/^[1-9]\d{0,19}$/.test(s)&&BigInt(s)<=18446744073709551615n;
   const fail=code=>Object.assign(new Error(code),{code});
+  function normalizeOfficialUrl(raw){
+    if(typeof raw!=='string'||raw.length>2048||/[\x00-\x20\x7f\\]/.test(raw))return null;
+    if(!raw)return '';
+    let value=raw;
+    if(!/^https?:\/\//i.test(value)){
+      // Only a DNS name with an alphabetic TLD may omit the scheme.
+      if(!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?:[/?#]|$)/i.test(value))return null;
+      value='https://'+value;
+    }
+    if(value.length>2048)return null;
+    try{const u=new URL(value);if(!/^https?:$/.test(u.protocol)||!u.hostname||u.username||u.password)return null;return value;}catch{return null;}
+  }
   function normalize(raw){
     const p={apiVersion:raw.apiVersion===2?2:1,threadName:raw.threadName.replace(/\r\n?/g,'\n').trim(),content:raw.content.replace(/\r\n?/g,'\n'),tagIds:[...(raw.tagIds||[])].sort()};
     const paired=s=>{for(let i=0;i<s.length;i++){const c=s.charCodeAt(i);if(c>=0xd800&&c<=0xdbff){const n=s.charCodeAt(++i);if(!(n>=0xdc00&&n<=0xdfff))return false;}else if(c>=0xdc00&&c<=0xdfff)return false;}return true;};
     if(!p.threadName||p.threadName.length>100||/[\x00-\x1f\x7f]/.test(raw.threadName)||!paired(p.threadName))throw fail('CONTENT_INVALID');
     if(!p.content.trim()||p.content.length>2000||/[\x00-\x08\x0b-\x1f\x7f]/.test(p.content)||!paired(p.content))throw fail('CONTENT_INVALID');
     if(p.tagIds.length>5||p.tagIds.some(id=>!snowflake(id))||new Set(p.tagIds).size!==p.tagIds.length)throw fail('TAG_INVALID');
-    if(p.apiVersion===2){if(typeof raw.officialUrl!=='string'||raw.officialUrl.length>2048||/[\x00-\x20\x7f]/.test(raw.officialUrl)||raw.imageUrl!==null&&(typeof raw.imageUrl!=='string'||raw.imageUrl.length>2048))throw fail('CONTENT_INVALID');p.officialUrl=raw.officialUrl;p.imageUrl=raw.imageUrl;}
+    if(p.apiVersion===2){if(typeof raw.officialUrl!=='string'||raw.officialUrl.length>2048||/[\x00-\x20\x7f]/.test(raw.officialUrl)||raw.imageUrl!==null&&(typeof raw.imageUrl!=='string'||raw.imageUrl.length>2048))throw fail('CONTENT_INVALID');p.officialUrl=normalizeOfficialUrl(raw.officialUrl);if(p.officialUrl===null)throw fail('CONTENT_INVALID');p.imageUrl=raw.imageUrl;}
     if(new TextEncoder().encode(JSON.stringify(p)).length>16384)throw fail('BODY_TOO_LARGE');return p;
   }
   async function hash(raw){const p=normalize(raw);return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(p.apiVersion===1?[1,p.threadName,p.content,p.tagIds]:[2,p.threadName,p.content,p.tagIds,p.officialUrl,p.imageUrl])))),x=>x.toString(16).padStart(2,'0')).join('');}
@@ -80,5 +92,5 @@
       status(meta){if(!validMeta(meta))throw fail('RESPONSE_INVALID');return api('/api/forum/posts/'+meta.operationId,'GET',null,meta.idempotencyKey);}
     };
   }
-  window.PosterClient={create,normalize,hash,snowflake,UUID};
+  window.PosterClient={create,normalize,normalizeOfficialUrl,hash,snowflake,UUID};
 }());

@@ -71,12 +71,12 @@ async function verify(out){
  if(sha(fs.readFileSync(path.join(dir,'wrangler.json')))!==m.configSha256||sha(fs.readFileSync(path.join(dir,'index.mjs')))!==m.bundleSha256||sha(await buildBundle())!==m.bundleSha256)fail('ARTIFACT_CHANGED');
  equal(sourceState(m.source.commit),state,'SOURCE_CHANGED_DURING_BUILD');return m;
 }
-function expectations(e){
+function expectations(e,{inspection=false}={}){
  shape(e,['schema','accountSha256','worker','namespaceId','activeVersion','latestVersion','deploymentId','mode','secretNames','settings'],'EXPECTATIONS_INVALID');
- if(e.schema!==1||e.worker!==WORKER||!HASH.test(e.accountSha256)||!/^[a-f0-9]{32}$/.test(e.namespaceId)||!UUID.test(e.activeVersion)||!UUID.test(e.latestVersion)||!UUID.test(e.deploymentId)||!['absent','false','read-only'].includes(e.mode))fail('EXPECTATIONS_INCOMPLETE');
+ if(e.schema!==1||e.worker!==WORKER||!HASH.test(e.accountSha256)||!/^[a-f0-9]{32}$/.test(e.namespaceId)||!UUID.test(e.activeVersion)||!UUID.test(e.latestVersion)||!UUID.test(e.deploymentId)||![...(inspection?['true']:[]),'absent','false','read-only'].includes(e.mode))fail('EXPECTATIONS_INCOMPLETE');
  if(!Array.isArray(e.secretNames)||e.secretNames.length<5||e.secretNames.some(n=>typeof n!=='string'||!/^[A-Z][A-Z0-9_]{0,79}$/.test(n))||new Set(e.secretNames).size!==e.secretNames.length)fail('EXPECTATIONS_INVALID');
  for(const n of ['ALLOWED_ORIGIN','DISCORD_BOT_TOKEN','DISCORD_FORUM_CHANNEL_ID','SESSION_SIGNING_KEY','APP_PASSWORD_HASH'])if(!e.secretNames.includes(n))fail('LEGACY_SECRET_REMOVAL');
- shape(e.settings,SETTING_KEYS,'SETTINGS_INVALID');if(e.settings.compatibility_date!=='2026-04-01'||e.settings.migration_tag!=='auth-v1'||e.settings.has_assets===true||e.settings.has_modules===false||e.settings.observability!==undefined&&e.settings.observability?.enabled!==false)fail('SETTINGS_INVALID');
+ shape(e.settings,SETTING_KEYS,'SETTINGS_INVALID');if(e.settings.compatibility_date!=='2026-04-01'||e.settings.migration_tag!=='auth-v1'||e.settings.has_assets===true||e.settings.has_modules===false||!inspection&&e.settings.observability!==undefined&&e.settings.observability?.enabled!==false)fail('SETTINGS_INVALID');
  return e;
 }
 const SETTING_KEYS=['compatibility_date','compatibility_flags','migration_tag','usage_model','observability','limits','placement','tail_consumers','streaming_tail_consumers','tags','exports','containers','cache_options','logpush','has_assets','has_modules'];
@@ -94,8 +94,8 @@ function reader(account,token,fetcher=globalThis.fetch){
   catch(error){if(error instanceof GateError)throw error;fail('NETWORK_OR_TIMEOUT');}finally{clearTimeout(timer);controller.abort();}
  };
 }
-async function snapshot(read,account,e){
- expectations(e);if(sha(account)!==e.accountSha256)fail('ACCOUNT_MISMATCH');const p=resources(account),data={};
+async function snapshot(read,account,e,{inspection=false}={}){
+ expectations(e,{inspection});if(sha(account)!==e.accountSha256)fail('ACCOUNT_MISMATCH');const p=resources(account),data={};
  for(const [name,resource]of Object.entries(p))data[name]=await read(resource);
  if(data.account?.id!==account||data.service?.default_environment?.environment!=='production')fail('ACCOUNT_OR_ENVIRONMENT_MISMATCH');
  if(data.versions?.items?.[0]?.id!==e.latestVersion)fail('LATEST_VERSION_CHANGED');
@@ -109,6 +109,7 @@ async function snapshot(read,account,e){
  if(!Array.isArray(data.namespaces)||data.namespaces.filter(n=>n.id===e.namespaceId).length!==1)fail('NAMESPACE_UNVERIFIED');const ns=data.namespaces.find(n=>n.id===e.namespaceId);if(ns.script!==WORKER||ns.class!=='AuthState'||ns.use_sqlite!==true)fail('DO_BACKEND_CHANGED');
  return {fingerprint:sha(JSON.stringify(canonical({latest:e.latestVersion,deployment,settings:e.settings,bindings:data.bindings,namespace:ns,routes:data.routes,domains:data.domains,schedules:data.schedules,subdomain:data.subdomain}))),requiredSecretsPresent:REQUIRED.every(n=>e.secretNames.includes(n))};
 }
+async function inspect(read,account,e){const first=await snapshot(read,account,e,{inspection:true}),second=await snapshot(read,account,e,{inspection:true});equal(first,second,'CONCURRENT_REMOTE_CHANGE');return {...first,productionGo:false,releaseEligible:false};}
 async function preflight(read,account,e){const first=await snapshot(read,account,e),second=await snapshot(read,account,e);equal(first,second,'CONCURRENT_REMOTE_CHANGE');return first;}
 // Validation only. A future explicitly approved executor must call this on its
 // actual multipart metadata; a passing fixture is not evidence of a real upload.
@@ -124,13 +125,14 @@ function assertUploadMetadata(m,config){
  if(m.bindings.length!==REQUIRED.length+2)fail('UPLOAD_BINDINGS_REJECTED');return true;
 }
 function parse(args){
- const mode=args.shift();if(!['prepare','verify','preflight'].includes(mode))fail('MODE_REJECTED');
+ const mode=args.shift();if(!['prepare','verify','preflight','inspect'].includes(mode))fail('MODE_REJECTED');
  const flags={};for(let n=0;n<args.length;n+=2){const k=args[n],v=args[n+1];if(!['--release','--expected-sha','--expectations'].includes(k)||flags[k]!==undefined||!v||v.startsWith('--'))fail('ARGUMENTS_REJECTED');flags[k]=v;}
- const expected=mode==='prepare'?['--release','--expected-sha',...(flags['--expectations']?['--expectations']:[])]:mode==='verify'?['--release']:['--release','--expectations'];equal(Object.keys(flags).sort(),expected.sort(),'ARGUMENTS_REJECTED');return {mode,...flags};
+ const expected=mode==='prepare'?['--release','--expected-sha',...(flags['--expectations']?['--expectations']:[])]:mode==='verify'?['--release']:mode==='inspect'?['--expectations']:['--release','--expectations'];equal(Object.keys(flags).sort(),expected.sort(),'ARGUMENTS_REJECTED');return {mode,...flags};
 }
 async function run(args,env=process.env){
  const options=parse([...args]);let result;
- let e;if(options['--expectations'])try{e=expectations(JSON.parse(fs.readFileSync(options['--expectations'],'utf8')));}catch(error){if(error instanceof GateError)throw error;fail('EXPECTATIONS_INVALID');}
+ let e;if(options['--expectations'])try{e=expectations(JSON.parse(fs.readFileSync(options['--expectations'],'utf8')),{inspection:options.mode==='inspect'});}catch(error){if(error instanceof GateError)throw error;fail('EXPECTATIONS_INVALID');}
+ if(options.mode==='inspect'){const account=env.OAUTH_GATE_CF_ACCOUNT_ID;const state=await inspect(reader(account,env.CLOUDFLARE_API_TOKEN),account,e);return {status:'PASS',mode:'inspect',remoteFingerprint:state.fingerprint,cloudWrites:0,productionGo:false,releaseEligible:false};}
  if(options.mode==='prepare')result=await prepare(options['--release'],options['--expected-sha'],e);else result=await verify(options['--release']);
  if(options.mode==='preflight'){
   if(!result.baseline)fail('REMOTE_BASELINE_NOT_BOUND');equal(result.baseline,e,'EXPECTATIONS_CHANGED');
@@ -139,5 +141,5 @@ async function run(args,env=process.env){
  }
  return {status:'PASS',mode:options.mode,sourceCommit:result.source.commit,bundleSha256:result.bundleSha256,configSha256:result.configSha256,postMode:'read-only',remoteBaselineBound:!!result.baseline,cloudWrites:0,productionGo:false};
 }
-module.exports={ROOT,WORKER,REQUIRED,GateError,sha,equal,sourceState,localConfig,candidateConfig,prepare,verify,reader,resources,expectations,settingView,snapshot,preflight,assertUploadMetadata,parse,run};
+module.exports={ROOT,WORKER,REQUIRED,GateError,sha,equal,sourceState,localConfig,candidateConfig,prepare,verify,reader,resources,expectations,settingView,snapshot,inspect,preflight,assertUploadMetadata,parse,run};
 if(require.main===module)run(process.argv.slice(2)).then(result=>console.log(JSON.stringify(result))).catch(error=>{console.error(error instanceof GateError?error.message:'OAUTH_GATE_STOPPED');process.exitCode=1;});

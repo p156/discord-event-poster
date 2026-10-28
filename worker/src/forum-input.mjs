@@ -1,3 +1,15 @@
+export function normalizeOfficialUrl(raw){
+    if(typeof raw!=='string'||raw.length>2048||/[\x00-\x20\x7f\\]/.test(raw))return null;
+    if(!raw)return '';
+    let value=raw;
+    if(!/^https?:\/\//i.test(value)){
+      // Only a DNS name with an alphabetic TLD may omit the scheme.
+      if(!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?:[/?#]|$)/i.test(value))return null;
+      value='https://'+value;
+    }
+    if(value.length>2048)return null;
+    try{const u=new URL(value);if(!/^https?:$/.test(u.protocol)||!u.hostname||u.username||u.password)return null;return value;}catch{return null;}
+  }
 export const POST_BODY_LIMIT=16384;
 export class PostInputError extends Error {
   constructor(code='INVALID_REQUEST',httpStatus=400,fields=[]) { super(code);this.name='PostInputError';this.code=code;this.httpStatus=httpStatus;this.fields=fields; }
@@ -45,7 +57,7 @@ export function validatePostPayload(value) {
   const extra={};
   if(value.apiVersion===2){
     for(const k of ['officialUrl','imageUrl'])if((k==='imageUrl'&&value[k]===null))continue;else if(typeof value[k]!=='string'||value[k].length>2048||!validUnicode(value[k])||/[\x00-\x20\x7f]/.test(value[k]))throw new PostInputError();
-    extra.officialUrl=value.officialUrl;extra.imageUrl=value.imageUrl;
+    extra.officialUrl=normalizeOfficialUrl(value.officialUrl);if(extra.officialUrl===null)throw new PostInputError();extra.imageUrl=value.imageUrl;
   }
   return Object.freeze({apiVersion:value.apiVersion,threadName,content,tagIds:Object.freeze([...tagIds].sort()),...extra});
 }
