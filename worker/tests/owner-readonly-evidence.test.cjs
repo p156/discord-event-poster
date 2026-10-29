@@ -30,6 +30,25 @@ test('bootstrap observes live true/Logs without relaxing release guard; only all
 test('permission failures stop once and do not disclose API body',async()=>{
  for(const status of [401,403,429,500,302]){let calls=0;await assert.rejects(()=>owner.collect(A,marker,async()=>{calls++;return new Response(marker,{status});}),gate.GateError);assert.equal(calls,1);}
 });
+test('each of 26 GET positions reports only a fixed API identifier and HTTP status',async()=>{
+ const order=['versions','deployments','environment','bindings',...Object.keys(gate.resources(A)),...Object.keys(gate.resources(A))];
+ for(let at=1;at<=order.length;at++){
+  const h=fixture();let calls=0;
+  const r=await owner.run(Readable.from([Buffer.from(JSON.stringify({account:A,token:marker}))]),async(u,i)=>{
+   if(++calls===at)return new Response(marker,{status:403,headers:{'X-Debug':marker}});
+   return h.fetch(u,i);
+  },['node','script']);
+  assert.equal(calls,at);
+  assert.equal(r.diagnostic,`OWNER_EVIDENCE_STOPPED phase=COLLECT apiAttempted=YES code=AUTHORIZATION_REJECTED api=${order[at-1].toUpperCase()} http=403 request=${at}`);
+  for(const value of [marker,A,'https:'])assert.ok(!r.diagnostic.includes(value));
+ }
+ const source=require('node:fs').readFileSync(require('node:path').resolve(__dirname,'../tools/owner-readonly-evidence.ps1'),'utf8');
+ const pattern=source.match(/\$stderr.Trim\(\) -cmatch '([^']+)'/)[1].replace('\\A','^').replace('\\z','$');
+ const accepted=new RegExp(pattern);
+ const safe='OWNER_EVIDENCE_STOPPED phase=COLLECT apiAttempted=YES code=AUTHORIZATION_REJECTED api=VERSIONS http=403 request=1';
+ assert.ok(accepted.test(safe));
+ for(const value of [safe+' '+marker,safe.replace('VERSIONS',marker),safe.replace('403',marker),safe.replace('request=1','request=27')])assert.ok(!accepted.test(value));
+});
 test('invalid credentials fail before network; no fallback',async()=>{
  for(const [a,t] of [['bad',marker],[A,''],[A,'bad\ntoken']]){let calls=0;await assert.rejects(()=>owner.collect(a,t,async()=>{calls++;}));assert.equal(calls,0);}
 });
@@ -74,13 +93,13 @@ test('diagnostics separate parsing, credentials, HTTP and schema without leaking
  assert.match(invalid.diagnostic,/apiAttempted=NO code=CREDENTIALS_UNAVAILABLE$/);assert.equal(calls,0);
  for(const [status,code] of [[401,'AUTHORIZATION_REJECTED'],[403,'AUTHORIZATION_REJECTED'],[500,'HTTP_REJECTED'],[302,'REDIRECT_REJECTED']]){
   let n=0;const r=await owner.run(stream(JSON.stringify({account:A,token:marker})),async()=>{n++;return new Response(marker,{status});},args);
-  assert.equal(n,1);assert.equal(r.diagnostic,`OWNER_EVIDENCE_STOPPED phase=COLLECT apiAttempted=YES code=${code}`);
+  assert.equal(n,1);assert.equal(r.diagnostic,`OWNER_EVIDENCE_STOPPED phase=COLLECT apiAttempted=YES code=${code} api=VERSIONS http=${status} request=1`);
  }
  const r=await owner.run(stream(JSON.stringify({account:A,token:marker})),forbidden,args);
- assert.equal(r.diagnostic,'OWNER_EVIDENCE_STOPPED phase=COLLECT apiAttempted=YES code=NETWORK_OR_TIMEOUT');
+ assert.equal(r.diagnostic,'OWNER_EVIDENCE_STOPPED phase=COLLECT apiAttempted=YES code=NETWORK_OR_TIMEOUT api=VERSIONS http=NONE request=1');
  const h=fixture();h.f[h.p.environment].script.extra=marker;
  const schema=await owner.run(stream(JSON.stringify({account:A,token:marker})),h.fetch,args);
- assert.match(schema.diagnostic,/apiAttempted=YES code=VALIDATION_OR_INTERNAL$/);
+ assert.match(schema.diagnostic,/apiAttempted=YES code=VALIDATION_OR_INTERNAL api=BINDINGS http=200 request=4$/);
  for(const value of [r,schema,invalid]){assert.ok(!JSON.stringify(value).includes(marker));assert.ok(!JSON.stringify(value).includes(A));}
  const ok=fixture();assert.equal((await owner.run(stream(JSON.stringify({account:A,token:marker})),ok.fetch,args)).result.productionGo,false);
 });

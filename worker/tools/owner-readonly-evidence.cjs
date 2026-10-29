@@ -47,15 +47,22 @@ async function input(stream){
 }
 const SAFE_CODES=new Set(['CREDENTIALS_UNAVAILABLE','AUTHORIZATION_REJECTED','REDIRECT_REJECTED','HTTP_REJECTED','NETWORK_OR_TIMEOUT','RESPONSE_INVALID','RESPONSE_TOO_LARGE','API_RESULT_REJECTED']);
 async function run(stream,fetcher=globalThis.fetch,args=process.argv){
- let phase='INPUT',attempted=false;
+ let phase='INPUT',attempted=false,api='NONE',http='NONE',request=0;
  try {
  if(args.length!==2||stream.isTTY)stop();
  let credentials;
- try{credentials=await input(stream);phase='COLLECT';return {result:await collect(credentials.account,credentials.token,(...a)=>{attempted=true;return fetcher(...a);})};}
+ try{credentials=await input(stream);phase='COLLECT';
+ const ids=new Map(Object.entries(gate.resources(credentials.account)).map(([id,p])=>['https://api.cloudflare.com/client/v4'+p,id.toUpperCase()]));
+ return {result:await collect(credentials.account,credentials.token,async(...a)=>{
+  api=ids.get(a[0])||'UNKNOWN';http='NONE';request++;attempted=true;
+  const response=await fetcher(...a);
+  if(Number.isInteger(response.status)&&response.status>=100&&response.status<=599)http=String(response.status);
+  return response;
+ })};}
  finally{if(credentials){credentials.account=null;credentials.token=null;}}
  } catch(error) {
  const code=error instanceof gate.GateError&&SAFE_CODES.has(error.message.slice('OAUTH_GATE_'.length))?error.message.slice('OAUTH_GATE_'.length):'VALIDATION_OR_INTERNAL';
- return {diagnostic:`OWNER_EVIDENCE_STOPPED phase=${phase} apiAttempted=${attempted?'YES':'NO'} code=${code}`};
+ return {diagnostic:`OWNER_EVIDENCE_STOPPED phase=${phase} apiAttempted=${attempted?'YES':'NO'} code=${code}`+(attempted?` api=${api} http=${http} request=${request}`:'')};
  }
 }
 module.exports={collect,input,run};

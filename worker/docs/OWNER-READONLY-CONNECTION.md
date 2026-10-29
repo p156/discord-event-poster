@@ -89,3 +89,57 @@ NOならローカル入力/起動段階を、YESなら分類に沿って調査�
 静的解析とダミー資格情報のモックのみを使用した。Owner秘密値・端末履歴は未参照、Cloudflare/Discordには未接続。
 この環境の匿名stdin既定encodingはshift_jisで、ASCIIダミーJSONはそのまま届いた。BOM原因は再現せず、断定しない。BOM付きJSONの安全停止はテストする。
 実コンソールの非表示入力から成功することは未検証のまま。実行ポリシーは変更・回避しない。
+
+## 2026-10-29 AUTHORIZATION_REJECTEDの静的調査
+
+調査基点は `30a51f3a95034f638f77664a7dffa55e5f414860`、開発ブランチ `event-poster-v2`。
+Owner報告のToken active、全アカウント対象、Workers Scripts Read、期限/IP制限なしは前提情報であり、エージェントはToken、資格情報、端末履歴を参照していない。
+
+`oauth2-release-gate.cjs` のreaderは、fetchのHTTP応答が非成功でstatusが401または403の場合だけ `AUTHORIZATION_REJECTED` を投げる。
+ローカルのAccount形式検査、metadata/schema不一致、HTTP 200のsuccess=falseを認可拒否と誤分類する経路はない。
+したがって旧ログは「少なくとも1回のGETでHTTP 401/403を受けた」ことを示すが、失敗先と401/403の区別は復元できない。
+Token verifyはこの収集器から呼ばない。Bearerヘッダーは入力Tokenをそのまま使い、Account IDは形式だけを先に検査する。
+有効な別Account IDやZone IDも形式検査を通り得る。実在/所属/配置先の一致は、形式とToken activeだけでは証明できない。
+
+以下のパスは仕様のテンプレートで、実値を表示するものではない。`A` はAccount、`W` は固定Worker、`E` は `/accounts/A/workers/services/W/environments/production`。
+全てGET。初回1〜4の後、表の5〜15を2巡し、合計26回。各失敗で即停止、retryなし。
+
+| 初回順 / 以後の巡回順 | 固定診断ID | パステンプレート | 読取権限の確認結果 |
+| --- | --- | --- | --- |
+| 1 / 7 | VERSIONS | /accounts/A/workers/scripts/W/versions | Workers Scripts Readを公式仕様が許可 |
+| 2 / 8 | DEPLOYMENTS | /accounts/A/workers/scripts/W/deployments | 同上 |
+| 3 / 9 | ENVIRONMENT | E | 公開API資料で当該パスの必要権限は未確定 |
+| 4 / 10 | BINDINGS | E/bindings | 同上 |
+| 5 | ACCOUNT | /accounts/A | Workers Scripts Readを公式仕様が許可 |
+| 6 | SERVICE | /accounts/A/workers/services/W | 公開API資料で当該パスの必要権限は未確定 |
+| 11 | ROUTES | E/routes?show_zonename=true | 同上。zone版routesの権限を流用しない |
+| 12 | DOMAINS | /accounts/A/workers/domains/records?page=0&per_page=5&service=W&environment=production | 同上。公開の別パス /workers/domains と同一扱いしない |
+| 13 | SUBDOMAIN | E/subdomain | 公開API資料で当該パスの必要権限は未確定 |
+| 14 | SCHEDULES | /accounts/A/workers/scripts/W/schedules | Workers Scripts Readを公式仕様が許可 |
+| 15 | NAMESPACES | /accounts/A/workers/durable_objects/namespaces?page=1&per_page=100 | 同上 |
+
+Service系6パスは固定済みWrangler 4.149.0の `fetchWorkerConfig` 等でも使用されていることをローカルソースで確認した。ただしSDK/CLIの使用実績は必要権限の証明ではない。
+公開仕様で確認できた5パスについては既存権限で実行可能な設計である。Account Settings ReadやDO用追加権限が必須という根拠はない。
+残る6パスを含む全26 GETが既存Tokenで成功するかは未確定で、追加権限が必要とも断定しない。
+
+公式根拠（Context7で検索後、公開API referenceのAccepted Permissionsを照合）：
+
+- [Versions一覧](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/methods/list/)
+- [Deployments一覧](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/deployments/methods/list/)
+- [Account詳細](https://developers.cloudflare.com/api/resources/accounts/methods/get/)
+- [Schedules](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/schedules/methods/get/)
+- [DO namespaces一覧](https://developers.cloudflare.com/api/resources/durable_objects/subresources/namespaces/methods/list/)
+
+### 安全な診断の追加とOwnerの次の操作
+
+新診断は既存行に `api=VERSIONS http=403 request=1` のような固定API識別子、HTTP数値、リクエスト通番だけを付ける。
+API識別子は固定パスとの完全一致から生成する。応答本文、ヘッダー、URL、Account ID、Token、例外文は読み出して表示しない。
+応答を得る前の失敗はhttp=NONE。metadata照合失敗ではapi/httpは最後の取得を示し、そのAPI自体の失敗を意味しない。
+PowerShellも診断全体を許可形式で検査し、それ以外のstderrは破棄する。API集合/順序/GET限定/timeout/サイズ/schema/NO-GOガードは変更しない。
+
+1. Owner自身がDashboardの対象WorkerのAccount IDをローカルで照合する。Zone ID、ユーザーID、別アカウントとの取り違えを確認し、ID自体を共有しない。
+2. 更新済み開発ブランチで、上記の同じPowerShellコマンドを私用コンソールから手動実行する。既存Tokenを使い、再発行・権限追加は行わない。実行ポリシーは変更しない。
+3. 停止行と固定診断行だけを共有する。例えば `code=AUTHORIZATION_REJECTED api=VERSIONS http=403 request=1` なら最初のVersions取得で拒否。Account ID照合後も拒否なら、入力した既存Tokenと検証したTokenの同一性をOwner側だけで確認し、権限反映/対象/サーバー側認可を当該パスに絞って調査する。
+4. SERVICE/ENVIRONMENT等なら、先行GETは成功しているためToken全体の無効と即断せず、当該パスの権限仕様または公開APIへの置換を別途検討する。401と403だけでは拒否の詳細原因は確定しない。追加権限なしでは取得不可と確認された場合も、勝手に権限を増やさず収集を止める。
+
+モック検証では26箇所それぞれの403を正しく識別し、即停止と秘密marker/URL/Accountの非出力、PowerShellの許可形式を確認する。実APIの拒否原因はOwnerの次回診断まで未確定。本番NO-GOは継続。
