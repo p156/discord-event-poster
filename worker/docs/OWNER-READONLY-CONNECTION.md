@@ -227,3 +227,9 @@ powershell -NoProfile -File .\worker\tools\owner-readonly-evidence.ps1
 5. PASSもmetadata照合だけ。productionGo=false / releaseEligible=false、全module・実効上限・停止復旧等のNOT VERIFIEDを維持する。本番NO-GOは継続する。
 
 検証は合成応答とダミー資格情報のみ。実API接続、資格情報閲覧、main変更、本番デプロイ/Secrets/設定変更は実施しない。
+
+実装commit `3144f36` のクリーンな作業ツリーで、次の関連テストは **48/48 PASS**（Owner 22、release gate 20、production protocol 6）。20ページ×100件/83 GET、重複・欠落・総数変化・順序不一致、途中HTTP/通信/JSON/envelope/サイズ失敗、履歴のみの変化、他APIの拒否維持、機密marker非出力、PowerShell許可形式を含む。既存10秒のbody timeout/cancelもPASS。PowerShellの実コンソール非表示入力と実API収集は未検証。
+
+```text
+node --test worker/tests/owner-readonly-evidence.test.cjs worker/tests/oauth2-release-gate.test.cjs worker/tests/production-release-protocol.test.cjs
+```
