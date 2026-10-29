@@ -10,10 +10,10 @@ const sha=x=>crypto.createHash('sha256').update(x).digest('hex');
 class GateError extends Error {constructor(code){super('OAUTH_GATE_'+code);}}
 const fail=code=>{throw new GateError(code);};
 // Fixed local classifications only; never attach API errors, messages or values.
-function resultRejection(data){
+function resultRejection(data,allowPagination=false){
  if(data?.success!==true)return data?.success===false?'SUCCESS_FALSE':'SUCCESS_NOT_TRUE';
  if(!Object.hasOwn(data,'result'))return 'RESULT_MISSING';
- if(data.result_info?.total_pages>1)return 'MULTIPLE_PAGES';
+ if(!allowPagination&&data.result_info?.total_pages>1)return 'MULTIPLE_PAGES';
  return null;
 }
 function canonical(v){if(Array.isArray(v))return v.map(canonical);if(v&&typeof v==='object')return Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])]));return v;}
@@ -91,14 +91,51 @@ const META_KEYS=['id','etag','tag','handlers','named_handlers','created_on','mod
 function settingView(runtime){shape(runtime,[...SETTING_KEYS,...META_KEYS],'UNKNOWN_SETTING');const result={};for(const k of SETTING_KEYS)if(Object.hasOwn(runtime,k))result[k]=runtime[k];return result;}
 function resources(account){const root='/accounts/'+account,service=root+'/workers/services/'+WORKER,script=root+'/workers/scripts/'+WORKER,environment=service+'/environments/production';return {account:root,service,versions:script+'/versions',deployments:script+'/deployments',environment,bindings:environment+'/bindings',routes:environment+'/routes?show_zonename=true',domains:root+'/workers/domains/records?page=0&per_page=5&service='+WORKER+'&environment=production',subdomain:environment+'/subdomain',schedules:script+'/schedules',namespaces:root+'/workers/durable_objects/namespaces?page=1&per_page=100'};}
 async function boundedJson(response,signal){const reader=response.body?.getReader();if(!reader)fail('RESPONSE_INVALID');let size=0;const chunks=[];const abort=()=>{void reader.cancel().catch(()=>{});};signal?.addEventListener('abort',abort,{once:true});try{while(true){if(signal?.aborted)fail('NETWORK_OR_TIMEOUT');const {value,done}=await reader.read();if(done)break;size+=value.length;if(size>1048576)fail('RESPONSE_TOO_LARGE');chunks.push(value);}if(signal?.aborted)fail('NETWORK_OR_TIMEOUT');return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)));}catch(error){if(error instanceof GateError)throw error;fail('RESPONSE_INVALID');}finally{signal?.removeEventListener('abort',abort);void reader.cancel().catch(()=>{});try{reader.releaseLock();}catch{}}}
-function reader(account,token,fetcher=globalThis.fetch){
+function reader(account,token,fetcher=globalThis.fetch,{ownerDeployments=false}={}){
  if(!/^[a-f0-9]{32}$/.test(account||'')||typeof token!=='string'||!token||/[\s\x00-\x1f\x7f]/.test(token))fail('CREDENTIALS_UNAVAILABLE');
  const permitted=new Set(Object.values(resources(account)));
- return async(resource,init={})=>{
-  if(!permitted.has(resource)||Object.keys(init).some(k=>k!=='method')||init.method!==undefined&&init.method!=='GET')fail('READ_ONLY_GUARD');
+ const deploymentPath=resources(account).deployments;
+ const pagePaths=new Set();
+ const request=async(resource,init={},envelope=false)=>{
+  if(!permitted.has(resource)&&!pagePaths.has(resource)||Object.keys(init).some(k=>k!=='method')||init.method!==undefined&&init.method!=='GET')fail('READ_ONLY_GUARD');
   const controller=new AbortController();let timer;
-  try{return await Promise.race([(async()=>{const r=await fetcher('https://api.cloudflare.com/client/v4'+resource,{method:'GET',redirect:'manual',headers:{Authorization:'Bearer '+token},signal:controller.signal});if(!r.ok){void r.body?.cancel().catch(()=>{});fail(r.status===401||r.status===403?'AUTHORIZATION_REJECTED':r.status>=300&&r.status<400?'REDIRECT_REJECTED':'HTTP_REJECTED');}const data=await boundedJson(r,controller.signal);const detail=resultRejection(data);if(detail){const error=new GateError('API_RESULT_REJECTED');error.detail=detail;throw error;}return data.result;})(),new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new GateError('NETWORK_OR_TIMEOUT'));},10000);})]);}
+  try{return await Promise.race([(async()=>{const r=await fetcher('https://api.cloudflare.com/client/v4'+resource,{method:'GET',redirect:'manual',headers:{Authorization:'Bearer '+token},signal:controller.signal});if(!r.ok){void r.body?.cancel().catch(()=>{});fail(r.status===401||r.status===403?'AUTHORIZATION_REJECTED':r.status>=300&&r.status<400?'REDIRECT_REJECTED':'HTTP_REJECTED');}const data=await boundedJson(r,controller.signal);const detail=resultRejection(data,envelope);if(detail){const error=new GateError('API_RESULT_REJECTED');error.detail=detail;throw error;}return envelope?data:data.result;})(),new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new GateError('NETWORK_OR_TIMEOUT'));},10000);})]);}
   catch(error){if(error instanceof GateError)throw error;fail('NETWORK_OR_TIMEOUT');}finally{clearTimeout(timer);controller.abort();}
+ };
+ return async(resource,init={})=>{
+  if(!permitted.has(resource))fail('READ_ONLY_GUARD');
+  if(!ownerDeployments||resource!==deploymentPath)return request(resource,init);
+  const reject=detail=>{const error=new GateError('API_RESULT_REJECTED');error.detail=detail;throw error;};
+  let first,all=[],seen=new Set(),previous=Infinity;
+  for(let page=1;page<=20;page++){
+   const target=page===1?resource:resource+'?page='+page+'&per_page='+first.per_page;
+   if(page>1)pagePaths.add(target);
+   const body=await request(target,init,true),info=body.result_info,items=body.result?.deployments;
+   if(!Array.isArray(items))reject('PAGINATION_INVALID');
+   if(items.length>100)reject('PAGINATION_LIMIT');
+   // Optional result_info: preserve the legacy unpaginated response contract.
+   if(page===1&&info===undefined)return body.result;
+   if(!info||typeof info!=='object'||Array.isArray(info))reject('PAGINATION_INVALID');
+   if(page===1&&info.total_pages===1&&Object.keys(info).length===1)return body.result;
+   for(const key of ['page','per_page','count','total_count','total_pages'])if(!Number.isSafeInteger(info[key])||info[key]<0)reject('PAGINATION_INVALID');
+   if(info.total_pages>20||info.total_count>2000||info.per_page>100)reject('PAGINATION_LIMIT');
+   if(info.page!==page||info.per_page<1||info.total_pages<1||info.total_pages!==Math.max(1,Math.ceil(info.total_count/info.per_page))||info.count!==items.length||items.length!==Math.min(info.per_page,Math.max(0,info.total_count-(page-1)*info.per_page)))reject('PAGINATION_INVALID');
+   if(!first)first=info;
+   if(info.total_pages!==first.total_pages||info.total_count!==first.total_count||info.per_page!==first.per_page)reject('PAGINATION_CHANGED');
+   for(const item of items){
+    if(!item||!UUID.test(item.id)||seen.has(item.id))reject('PAGINATION_DUPLICATE');
+    seen.add(item.id);
+    if(first.total_pages>1){
+     const time=typeof item.created_on==='string'?Date.parse(item.created_on):NaN;
+     if(!Number.isFinite(time)||time>previous)reject('PAGINATION_ORDER');
+     if(all.length===1&&time===previous)reject('PAGINATION_ORDER');
+     previous=time;
+    }
+    all.push(item);
+   }
+   if(page===first.total_pages){if(all.length!==first.total_count)reject('PAGINATION_INVALID');return {deployments:all};}
+  }
+  reject('PAGINATION_LIMIT');
  };
 }
 async function snapshot(read,account,e,{inspection=false}={}){

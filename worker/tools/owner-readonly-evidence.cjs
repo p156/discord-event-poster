@@ -3,7 +3,16 @@
 const gate=require('./oauth2-release-gate.cjs');
 const stop=()=>{throw new Error('OWNER_EVIDENCE_STOPPED');};
 async function collect(account,token,fetcher=globalThis.fetch){
- const read=gate.reader(account,token,fetcher),p=gate.resources(account);
+ const base=gate.reader(account,token,fetcher,{ownerDeployments:true}),p=gate.resources(account);
+ let deploymentBaseline;
+ const read=async resource=>{
+  const result=await base(resource);
+  if(resource===p.deployments){
+   if(deploymentBaseline)gate.equal(result,deploymentBaseline,'DEPLOYMENT_HISTORY_CHANGED');
+   else deploymentBaseline=structuredClone(result);
+  }
+  return result;
+ };
  const versions=await read(p.versions),deployments=await read(p.deployments);
  const environment=await read(p.environment),bindings=await read(p.bindings);
  if(!Array.isArray(bindings))stop();
@@ -54,7 +63,7 @@ async function run(stream,fetcher=globalThis.fetch,args=process.argv){
  try{credentials=await input(stream);phase='COLLECT';
  const ids=new Map(Object.entries(gate.resources(credentials.account)).map(([id,p])=>['https://api.cloudflare.com/client/v4'+p,id.toUpperCase()]));
  return {result:await collect(credentials.account,credentials.token,async(...a)=>{
-  api=ids.get(a[0])||'UNKNOWN';http='NONE';request++;attempted=true;
+  api=ids.get(a[0])||(new RegExp('^https://api\\.cloudflare\\.com/client/v4/accounts/[a-f0-9]{32}/workers/scripts/'+gate.WORKER+'/deployments\\?page=([2-9]|1[0-9]|20)&per_page=([1-9]|[1-9][0-9]|100)$').test(a[0])?'DEPLOYMENTS':'UNKNOWN');http='NONE';request++;attempted=true;
   const response=await fetcher(...a);
   if(Number.isInteger(response.status)&&response.status>=100&&response.status<=599)http=String(response.status);
   return response;
@@ -62,7 +71,7 @@ async function run(stream,fetcher=globalThis.fetch,args=process.argv){
  finally{if(credentials){credentials.account=null;credentials.token=null;}}
  } catch(error) {
  const code=error instanceof gate.GateError&&SAFE_CODES.has(error.message.slice('OAUTH_GATE_'.length))?error.message.slice('OAUTH_GATE_'.length):'VALIDATION_OR_INTERNAL';
- const detail=code==='API_RESULT_REJECTED'&&['SUCCESS_FALSE','SUCCESS_NOT_TRUE','RESULT_MISSING','MULTIPLE_PAGES'].includes(error.detail)?` detail=${error.detail}`:'';
+ const detail=code==='API_RESULT_REJECTED'&&['SUCCESS_FALSE','SUCCESS_NOT_TRUE','RESULT_MISSING','MULTIPLE_PAGES','PAGINATION_INVALID','PAGINATION_LIMIT','PAGINATION_CHANGED','PAGINATION_DUPLICATE','PAGINATION_ORDER'].includes(error.detail)?` detail=${error.detail}`:'';
  return {diagnostic:`OWNER_EVIDENCE_STOPPED phase=${phase} apiAttempted=${attempted?'YES':'NO'} code=${code}`+(attempted?` api=${api} http=${http} request=${request}`:'')+detail};
  }
 }

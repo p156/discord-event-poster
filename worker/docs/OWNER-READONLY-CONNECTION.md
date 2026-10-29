@@ -19,8 +19,8 @@ Nodeへの資格情報の手入力や平文ファイルを代替にしない。
 
 ## APIの範囲と権限
 
-GET先、無retry、10秒/応答1MiB、redirect拒否、pagination拒否は既存 `oauth2-release-gate.cjs` のreaderをそのまま使用する。Token探索、Wrangler login、Global Keyへのfallbackはない。
-最初にversions/deployments/environment/bindingsを取得し、完全UUIDと期待値をメモリー内に構成した後、既存inspectの全11資源を2巡する（計26 GET、各1回、失敗時は即中断）。
+GET先、無retry、10秒/応答1MiB、redirect拒否は既存readerの制約を維持する。Owner専用のDeployments巡回だけを追加した（下記2026-10-29複数ページ対応参照）。他APIとrelease用reader既定の複数ページ拒否は維持する。Token探索、Wrangler login、Global Keyへのfallbackはない。
+最初にversions/deployments/environment/bindingsを取得し、完全UUIDと期待値をメモリー内に構成した後、既存inspectの全11資源を2巡する（単一ページなら計26 GET。Deploymentsの各巡回がPページなら26+3×(P-1)、最大83 GET。各ページ1回、失敗時は即中断）。
 これは原子的snapshotでもロックでもない。
 資源はAccount、Service、Versions、Deployments、production Environmentとbindings/routes/subdomain、固定Serviceのdomains、schedules、DO namespacesに限定する。業務用Workerのsession/status/OAuth/DOデータへアクセスしない。
 
@@ -180,3 +180,50 @@ OWNER_EVIDENCE_STOPPED phase=COLLECT apiAttempted=YES code=API_RESULT_REJECTED a
 ```
 
 上記は想定例であり実測ではない。実API接続、資格情報閲覧、main更新、本番設定/Secrets/デプロイ/投稿は行っていない。本番NO-GOを維持する。
+
+## 2026-10-29 MULTIPLE_PAGES確定後の対応（基点369bbc1）
+
+Ownerの報告は `http=200 request=2 detail=MULTIPLE_PAGES`。これはsuccess:trueとresultキーの存在を通過後、total_pages>1という旧ローカル制限で停止したことを確定する。Tokenの全資源への権限やAccount同一性、証拠収集完了を証明するものではない。上の「未確定」「pagination拒否」「26回固定」は旧時点の調査記録で、この節が現在の実装を示す。
+
+### 公式仕様と取得範囲
+
+[Cloudflare Deployments公式API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/deployments/methods/list/) をContext7と公開referenceで確認。pageは1以上、per_pageは1〜100。result.deploymentsが履歴で、先頭が現在トラフィックを処理する最新deployment。result_infoと各フィールドは公式schemaではoptionalである。
+
+Owner収集だけがreaderのownerDeploymentsを有効にする。初回は従来の固定パス（既定page=1）を取得し、複数ページなら返却per_pageを固定してpage=2から順番に取得する。next URLや本文中のURLは追跡しない。固定origin/Account/Worker/GETのみ。ページ上限20、各ページ100件以下、合計2000件以下。初回の既定per_pageが20なら最大400件であり、上限回避の再取得・自動拡大はしない。
+
+複数ページではpage/per_page/count/total_count/total_pagesを非負の安全な整数として要求し、正しいページ番号、ページサイズ、最終ページまでの各件数、総件数と総ページ数の算術的整合、巡回中の総数不変を検査する。欠落や不完全なmetadataは推測しない。UUID重複・同じページの再返却を拒否する。API順序をそのまま維持し、再ソートで先頭を選び直さない。追加の保守的ローカル条件として複数ページ時のcreated_onが有効で降順であること、先頭2件が同時刻でないことを要求する。公式は履歴全体の時刻降順や同時刻の順序を明記していないため、これに合わない応答は安全停止して個別レビューする。
+
+result_infoがない旧単一応答、またはtotal_pages:1だけの旧単一ページ形式は従来通り扱う。これらはページ情報による履歴全体の完全性証明ではない。部分的な複数ページmetadata、途中ページでのmetadata消失、total_pages:0は停止する。空履歴は稼働deploymentを確定できず停止する。
+
+初回に全履歴をメモリー内で保持し、既存inspectの2巡でも毎回全ページを読み、初回と履歴全体を照合する。稼働deployment ID、単一Version/100%配分、latestVersion、設定等の既存照合も維持する。最新Versionと稼働Versionの同一性は要求せず、未デプロイVersionを許容する。履歴末尾だけの変更でも停止する。これは原子的snapshotやロックではなく、ページング中に検出できない相殺変化まで否定するものではない。
+
+[Versions公式API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/methods/list/) にもpage/per_pageがあり、deployableはpaginationを無視する別フィルターである。本修正でdeployableやVersionsの取得意味は変更しない。Versions、Namespaces、Domains等は複数ページなら従来のMULTIPLE_PAGESで停止し、切捨て成功にはしない。releaseのinspect/preflight既定readerも従来の複数ページ拒否を維持する。Owner出力をそのままrelease基準に昇格させない。
+
+### 失敗・診断
+
+途中失敗、上限、順序不一致、履歴変化では部分結果やPASSを出さず停止する。再試行なし、各GETの10秒/1MiB、redirect拒否は継続。ページは順次取得し、最大83 GET（最悪の各GET期限の単純合計は830秒）。requestはページ番号でもretry回数でもなく、その実行でのfetch試行通番。後続ページもapi=DEPLOYMENTSで分類し、PowerShellはrequest=1〜83のみ許可する。http=NONEは応答前失敗。後続metadata照合エラーではapi/httpは最後の取得を示す。
+
+| detail | 意味 |
+|---|---|
+| PAGINATION_LIMIT | ページ数・件数・ページサイズの上限超過 |
+| PAGINATION_INVALID | 番号、件数、metadataの欠落・型・整合性不一致 |
+| PAGINATION_CHANGED | 同一巡回中のページサイズ・総数変更（算術検査に先に失敗する場合はINVALID） |
+| PAGINATION_DUPLICATE | deployment UUIDの不正・重複 |
+| PAGINATION_ORDER | 日時欠落・不正・逆順・先頭時刻の同順位 |
+
+SUCCESS_FALSE / SUCCESS_NOT_TRUE / RESULT_MISSINGは引き続きenvelope失敗を表す。巡回間の履歴変更等はVALIDATION_OR_INTERNAL。本文、ヘッダー、URL、Account ID、Token、annotation、メール、例外文、ページ内データは表示しない。
+
+### Ownerの次の手順
+
+1. 更新済みevent-poster-v2のcommitと固定Worker名、所属Accountをローカル確認する。
+2. 信頼できる私用コンソールでリポジトリルートから従来と同じコマンドを実行する。
+
+```powershell
+powershell -NoProfile -File .\worker\tools\owner-readonly-evidence.ps1
+```
+
+3. READを入力し、既存Account/読み取りTokenを非表示プロンプトだけへ入力する。資格情報の共有・新規発行・権限追加・実行ポリシー回避はしない。
+4. 停止時はdetail付きの固定診断行だけを共有する。LIMITなら上限を自己変更せず停止、INVALID/CHANGED/DUPLICATE/ORDERならmetadata/同時変更の追加レビューを行う。他APIのMULTIPLE_PAGESは今回の対象外なので別レビューする。生応答は共有しない。
+5. PASSもmetadata照合だけ。productionGo=false / releaseEligible=false、全module・実効上限・停止復旧等のNOT VERIFIEDを維持する。本番NO-GOは継続する。
+
+検証は合成応答とダミー資格情報のみ。実API接続、資格情報閲覧、main変更、本番デプロイ/Secrets/設定変更は実施しない。
