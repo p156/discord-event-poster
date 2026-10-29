@@ -7,7 +7,7 @@
 1. ローカルの信頼できるコンソールで、この開発ブランチのソースと使用するNodeを確認する。画面共有、録画、デバッガー、入力を採取する監視のない環境で行う。資格情報をチャット、引数、ファイルへ書かない。既存Tokenを安全に利用できない場合はここで止める。発行・権限追加・refreshは本手順に含まない。
 2. リポジトリのルートで `powershell -NoProfile -File .\worker\tools\owner-readonly-evidence.ps1` を手動実行する。実行ポリシーは変更しない。署名ポリシーなどで拒否された場合は止める。
 3. 固定Cloudflare管理APIへのGETを行うことを確認し、`READ` を入力する。既存Account IDと既存読み取りTokenを非表示プロンプトへ入力する。これはOwnerが行う明示接続操作であり、エージェントは代行しない。
-4. 成功時のJSONだけを確認する。`status=PASS` はmetadataの照合成功に限る。常に `productionGo=false`。停止時は `OWNER_EVIDENCE_STOPPED` のみ表示する。失敗原因の調査でも生のstderr、HTTP本文、ヘッダーを出力しない。権限不足・未知schema・分割deploymentなどを推測で補完しない。
+4. 成功時のJSONだけを確認する。`status=PASS` はmetadataの照合成功に限る。常に `productionGo=false`。停止時は `OWNER_EVIDENCE_STOPPED` と、固定語彙だけの診断行を表示する。失敗原因の調査でも生のstderr、HTTP本文、ヘッダーを出力しない。権限不足・未知schema・分割deploymentなどを推測で補完しない。
 5. 安全に保存したい場合も、確認済みの出力JSONだけをGit対象外の `work/` へ手動保存する。入力・生応答は保存しない。既存preflightへ自動投入しない。
 
 今回の実行環境ではPowerShellのAuthorizationManagerがスクリプト起動を拒否した。
@@ -62,3 +62,30 @@ Bot TokenをCloudflareから取り出さない。既存Bot Tokenを安全に利�
 - [Script/version settings](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/script_and_version_settings/methods/get/)
 - [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)
 - [Discord Current User](https://docs.discord.com/developers/resources/user#get-current-user)、[Application](https://docs.discord.com/developers/resources/application)、[Permissions](https://docs.discord.com/developers/topics/permissions)
+
+## 2026-10-29 停止調査と次の操作
+
+調査開始時のGitHub開発HEADは `9195f52edd6930ef01546d3f978c0cff030b0964` と一致した。
+旧版はPowerShellの全例外と子Nodeの全失敗を同じ表示へ潰し、stderrも捨てていたため、報告された表示だけでは原因もAPI到達も確定できない。
+Token有効というOwner報告は尊重するが、本ツールのAccount範囲・endpoint権限・metadata照合成功とは別である。
+
+入力後の停止候補はAccount形式（小文字16進32桁、trimなし）、Token形式（空・4096超・空白/制御文字を拒否）、子プロセス起動、JSON送信/解析、最初のversions GET、後続GET、metadata照合である。
+READと両入力プロンプトまで進んだ場合、確認拒否とNode探索失敗はその実行の停止点ではない。Token入力処理自体の例外は残る。
+Account/TokenはSecureStringからBSTR経由で取得され、検査後に匿名stdinだけへJSON送信する。PowerShellとNodeの両catchは元の例外を表示しない。
+
+修正は診断だけで、入力を補正したり、権限・schema・本番ガードを緩めたりしない。
+PowerShell側は固定stageを表示する。ACCOUNT_FORMAT/TOKEN_FORMAT/PROCESS_STARTなど、子への送信前はapiAttempted=NO。
+STDIN_WRITE/CHILD_WAITで子の安全な診断を得られない場合はUNKNOWNとし、未接続と断定しない。
+子はINPUT/COLLECT、apiAttempted=YES/NOと固定codeだけを返す。YESはfetch呼出しを試行した意味で、サーバー受信の証明ではない。
+AUTHORIZATION_REJECTEDは401/403、HTTP_REJECTEDはそれ以外のHTTP失敗、NETWORK_OR_TIMEOUTは接続/timeout分類、VALIDATION_OR_INTERNALは未知schema等を含む。
+入力値、Account ID、URL、HTTP本文、例外messageやstackは診断に含めない。子stderrは行全体が許可形式に一致した場合だけ表示する。
+
+Ownerの次の一手は、更新済み開発ブランチを確認したうえで、上記手順2の同じコマンドを信頼できる私用コンソールで手動実行すること。
+これはOwnerが明示的に接続を選ぶ操作である。自動再実行はしない。
+停止した場合は固定の停止行と診断行だけを共有する。資格情報や生エラーは共有しない。
+NOならローカル入力/起動段階を、YESなら分類に沿って調査する。401/403でもToken再発行や権限追加はしない。
+本番NO-GO、実効上限・全module・停止復旧などの未検証項目は継続する。
+
+静的解析とダミー資格情報のモックのみを使用した。Owner秘密値・端末履歴は未参照、Cloudflare/Discordには未接続。
+この環境の匿名stdin既定encodingはshift_jisで、ASCIIダミーJSONはそのまま届いた。BOM原因は再現せず、断定しない。BOM付きJSONの安全停止はテストする。
+実コンソールの非表示入力から成功することは未検証のまま。実行ポリシーは変更・回避しない。

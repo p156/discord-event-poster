@@ -45,10 +45,20 @@ async function input(stream){
  if(!value||Object.keys(value).sort().join()!=='account,token')stop();
  return value;
 }
-module.exports={collect,input};
-if(require.main===module)(async()=>{
- if(process.argv.length!==2||process.stdin.isTTY)stop();
+const SAFE_CODES=new Set(['CREDENTIALS_UNAVAILABLE','AUTHORIZATION_REJECTED','REDIRECT_REJECTED','HTTP_REJECTED','NETWORK_OR_TIMEOUT','RESPONSE_INVALID','RESPONSE_TOO_LARGE','API_RESULT_REJECTED']);
+async function run(stream,fetcher=globalThis.fetch,args=process.argv){
+ let phase='INPUT',attempted=false;
+ try {
+ if(args.length!==2||stream.isTTY)stop();
  let credentials;
- try{credentials=await input(process.stdin);return await collect(credentials.account,credentials.token);}
+ try{credentials=await input(stream);phase='COLLECT';return {result:await collect(credentials.account,credentials.token,(...a)=>{attempted=true;return fetcher(...a);})};}
  finally{if(credentials){credentials.account=null;credentials.token=null;}}
-})().then(result=>console.log(JSON.stringify(result))).catch(()=>{console.error('OWNER_EVIDENCE_STOPPED');process.exitCode=1;});
+ } catch(error) {
+ const code=error instanceof gate.GateError&&SAFE_CODES.has(error.message.slice('OAUTH_GATE_'.length))?error.message.slice('OAUTH_GATE_'.length):'VALIDATION_OR_INTERNAL';
+ return {diagnostic:`OWNER_EVIDENCE_STOPPED phase=${phase} apiAttempted=${attempted?'YES':'NO'} code=${code}`};
+ }
+}
+module.exports={collect,input,run};
+if(require.main===module)run(process.stdin).then(({result,diagnostic})=>{
+ if(diagnostic){console.error(diagnostic);process.exitCode=1;}else console.log(JSON.stringify(result));
+});

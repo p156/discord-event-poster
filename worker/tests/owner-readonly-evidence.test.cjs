@@ -50,7 +50,7 @@ test('stdin schema and size are bounded',async()=>{
 test('CLI rejects arguments and malformed credential input with constant output',()=>{
  const script=require.resolve('../tools/owner-readonly-evidence.cjs');
  for(const args of [[script,'--execute'],[script]]){
- const r=spawnSync(process.execPath,args,{input:marker,encoding:'utf8',env:{}});assert.equal(r.status,1);assert.equal(r.stdout,'');assert.equal(r.stderr.trim(),'OWNER_EVIDENCE_STOPPED');
+ const r=spawnSync(process.execPath,args,{input:marker,encoding:'utf8',env:{}});assert.equal(r.status,1);assert.equal(r.stdout,'');assert.equal(r.stderr.trim(),'OWNER_EVIDENCE_STOPPED phase=INPUT apiAttempted=NO code=VALIDATION_OR_INTERNAL');
  }
 });
 test('PowerShell wrapper is blocked by policy or cancels without connection',{skip:process.platform!=='win32'},()=>{
@@ -61,6 +61,26 @@ test('PowerShell wrapper is blocked by policy or cancels without connection',{sk
  assert.match(source,/RedirectStandardInput = \$true/);assert.match(source,/ZeroFreeBSTR/);
  const r=spawnSync('powershell',['-NoProfile','-Command',`function Read-Host { 'CANCEL' }; & '${script}'`],{encoding:'utf8'});
  assert.equal(r.status,1);
- if(r.stdout.trim()==='OWNER_EVIDENCE_STOPPED')assert.equal(r.stderr,'');
+ if(r.stdout.startsWith('OWNER_EVIDENCE_STOPPED')){assert.equal(r.stderr,'');assert.match(r.stdout,/stage=CONSOLE apiAttempted=NO/);}
  else {assert.equal(r.stdout,'');assert.match(r.stderr,/PSSecurityException|UnauthorizedAccess/);}
+});
+test('diagnostics separate parsing, credentials, HTTP and schema without leaking values',async()=>{
+ const stream=s=>Readable.from([Buffer.from(s)]),args=['node','script'];
+ let calls=0;const forbidden=()=>{calls++;throw Error(marker);};
+ for(const s of [marker,'\ufeff{}',JSON.stringify({account:A,token:marker,extra:marker})]){
+  const r=await owner.run(stream(s),forbidden,args);assert.equal(r.diagnostic,'OWNER_EVIDENCE_STOPPED phase=INPUT apiAttempted=NO code=VALIDATION_OR_INTERNAL');
+ }
+ const invalid=await owner.run(stream(JSON.stringify({account:'INVALID',token:marker})),forbidden,args);
+ assert.match(invalid.diagnostic,/apiAttempted=NO code=CREDENTIALS_UNAVAILABLE$/);assert.equal(calls,0);
+ for(const [status,code] of [[401,'AUTHORIZATION_REJECTED'],[403,'AUTHORIZATION_REJECTED'],[500,'HTTP_REJECTED'],[302,'REDIRECT_REJECTED']]){
+  let n=0;const r=await owner.run(stream(JSON.stringify({account:A,token:marker})),async()=>{n++;return new Response(marker,{status});},args);
+  assert.equal(n,1);assert.equal(r.diagnostic,`OWNER_EVIDENCE_STOPPED phase=COLLECT apiAttempted=YES code=${code}`);
+ }
+ const r=await owner.run(stream(JSON.stringify({account:A,token:marker})),forbidden,args);
+ assert.equal(r.diagnostic,'OWNER_EVIDENCE_STOPPED phase=COLLECT apiAttempted=YES code=NETWORK_OR_TIMEOUT');
+ const h=fixture();h.f[h.p.environment].script.extra=marker;
+ const schema=await owner.run(stream(JSON.stringify({account:A,token:marker})),h.fetch,args);
+ assert.match(schema.diagnostic,/apiAttempted=YES code=VALIDATION_OR_INTERNAL$/);
+ for(const value of [r,schema,invalid]){assert.ok(!JSON.stringify(value).includes(marker));assert.ok(!JSON.stringify(value).includes(A));}
+ const ok=fixture();assert.equal((await owner.run(stream(JSON.stringify({account:A,token:marker})),ok.fetch,args)).result.productionGo,false);
 });
