@@ -103,3 +103,46 @@ test('diagnostics separate parsing, credentials, HTTP and schema without leaking
  for(const value of [r,schema,invalid]){assert.ok(!JSON.stringify(value).includes(marker));assert.ok(!JSON.stringify(value).includes(A));}
  const ok=fixture();assert.equal((await owner.run(stream(JSON.stringify({account:A,token:marker})),ok.fetch,args)).result.productionGo,false);
 });
+
+test('HTTP 200 deployments envelope failures have fixed, non-disclosing details',async()=>{
+ const cases=[
+  [{success:false,result:{},errors:[{code:123,message:marker}]},'SUCCESS_FALSE'],
+  [{success:false,result_info:{total_pages:2}},'SUCCESS_FALSE'],
+  [{result:{},success:marker},'SUCCESS_NOT_TRUE'],
+  [null,'SUCCESS_NOT_TRUE'],[[], 'SUCCESS_NOT_TRUE'],
+  [{deployments:[]},'SUCCESS_NOT_TRUE'],
+  [{success:true},'RESULT_MISSING'],
+  [{success:true,result:{deployments:[]},result_info:{total_pages:2}},'MULTIPLE_PAGES']
+ ];
+ const source=require('node:fs').readFileSync(require.resolve('../tools/owner-readonly-evidence.ps1'),'utf8');
+ const pattern=source.match(/\$stderr.Trim\(\) -cmatch '([^']+)'/)[1].replace('\\A','^').replace('\\z','$');
+ const accepted=new RegExp(pattern);
+ for(const [body,detail] of cases){
+  const h=fixture();let calls=0;
+  const r=await owner.run(Readable.from([Buffer.from(JSON.stringify({account:A,token:marker}))]),async(u,i)=>{
+   calls++;return calls===2?Response.json(body):h.fetch(u,i);
+  },['node','script']);
+  assert.equal(calls,2);
+  const expected='OWNER_EVIDENCE_STOPPED phase=COLLECT apiAttempted=YES code=API_RESULT_REJECTED api=DEPLOYMENTS http=200 request=2 detail='+detail;
+  assert.equal(r.diagnostic,expected);assert.ok(accepted.test(expected));
+  for(const value of [marker,A,'https:','123'])assert.ok(!r.diagnostic.includes(value));
+  assert.ok(!accepted.test(expected+' '+marker));
+  assert.ok(!accepted.test(expected.replace(detail,marker)));
+ }
+});
+test('result contents are not confused with envelope rejection; valid single page proceeds',async()=>{
+ for(const result of [null,[],{}, {deployments:[]}, {deployments:[{versions:[]}]}]){
+  const h=fixture();h.f[h.p.deployments]=result;
+  const r=await owner.run(Readable.from([Buffer.from(JSON.stringify({account:A,token:marker}))]),h.fetch,['node','script']);
+  assert.equal(h.calls,4);assert.match(r.diagnostic,/code=VALIDATION_OR_INTERNAL api=BINDINGS http=200 request=4$/);
+ }
+ for(const info of [undefined,{total_pages:0},{total_pages:1}]){
+  const h=fixture();
+  const r=await owner.run(Readable.from([Buffer.from(JSON.stringify({account:A,token:marker}))]),async(u,i)=>{
+   const response=await h.fetch(u,i);const body=await response.json();
+   if(u.endsWith('/deployments'))body.result_info=info;
+   return Response.json(body);
+  },['node','script']);
+  assert.equal(r.result.productionGo,false);assert.equal(h.calls,26);
+ }
+});

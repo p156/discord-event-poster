@@ -143,3 +143,40 @@ PowerShellも診断全体を許可形式で検査し、それ以外のstderrは�
 4. SERVICE/ENVIRONMENT等なら、先行GETは成功しているためToken全体の無効と即断せず、当該パスの権限仕様または公開APIへの置換を別途検討する。401と403だけでは拒否の詳細原因は確定しない。追加権限なしでは取得不可と確認された場合も、勝手に権限を増やさず収集を止める。
 
 モック検証では26箇所それぞれの403を正しく識別し、即停止と秘密marker/URL/Accountの非出力、PowerShellの許可形式を確認する。実APIの拒否原因はOwnerの次回診断まで未確定。本番NO-GOは継続。
+
+## HTTP 200 / DEPLOYMENTSのAPI_RESULT_REJECTED調査（2026-10-29）
+
+対象基点は d9ab880。共有されたrequest=2は1回のcollect開始後のGET通番であり、retry回数やページ番号ではない。順序はVERSIONS、DEPLOYMENTS、ENVIRONMENT、BINDINGS、その後11資源を2巡。今回Versionsのreader検査は通過したが、Versions内のID検査やAccount詳細照合まで完了した意味ではない。
+
+旧readerがAPI_RESULT_REJECTEDを投げる条件は、JSON解析後の次のOR条件だけだった。
+
+1. success !== true（falseだけでなく欠落・異なる型を含む）
+2. 自身のresultキーがない
+3. result_info.total_pages > 1（JavaScriptの比較。旧条件を変更しない）
+
+JSON不正はRESPONSE_INVALID、サイズ超過はRESPONSE_TOO_LARGE、HTTP 401/403はAUTHORIZATION_REJECTEDであり別分類。result:null、配列、deployments欠落・空・不正なversions等はresultキーがある限り上記2には該当しない。後続のmetadata照合でVALIDATION_OR_INTERNAL等になる。共有された1行からsuccess:falseやresult内部構造の不一致を断定することはできない。
+
+[公式Deployments一覧](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/deployments/methods/list/)をContext7と公開referenceで確認した。GETのパスは /accounts/{account_id}/workers/scripts/{script_name}/deployments。account_idはWorker所属Account、script_nameはWorkerスクリプト名であり、固定対象はdiscord-event-poster-api。Zone ID、Token ID、deployment/version UUID、workers.devのホスト名ではない。同名Workerが別Accountに存在しても別資源となる。入力Accountと固定Worker名はVersionsにも共通なので、通番1の成功だけで意図したAccountの同一性が証明されるわけではない。Dashboard上でOwnerがローカル照合する。
+
+公式の成功形式はsuccess:true、result:{deployments:[...]}。先頭deploymentが現在トラフィックを処理する最新deployment。page/per_page等のqueryと任意のresult_infoがあり、公式200例にもtotal_pages:100が載る。そのため正常な履歴の複数ページをローカルのpagination拒否が停止させる可能性がある。これは今回の有力な切り分け候補だが、実応答を見ていないため未確定。公式例は実環境のページ数を示す証拠ではない。Workers Scripts Readは当該GETのAccepted Permissionsに含まれ、現在の証拠から追加権限やToken再発行を要求しない。Token activeという情報だけで各資源の応答内容までは証明されない。
+
+### 追加診断と再実行
+
+API_RESULT_REJECTEDの末尾に次の固定detailだけを付ける。複数条件に該当した場合は上から優先して1つ表示する。
+
+| detail | 意味 | 次の判断 |
+|---|---|---|
+| SUCCESS_FALSE | JSONのsuccessがboolean false | HTTP 200のAPI失敗応答。エラー本文は共有せず、この行を根拠に次の安全な調査を検討 |
+| SUCCESS_NOT_TRUE | success欠落・型違い等 | 標準envelopeとの差異。成功扱いへ推測で変換しない |
+| RESULT_MISSING | success:trueだがresultキー欠落 | envelope形式不一致。result内部の型の問題とは区別 |
+| MULTIPLE_PAGES | success:true、resultキーあり、total_pages > 1 | ローカルpagination拒否。API失敗や権限不足を示さない。先頭の稼働deploymentだけを検証する取得設計を別途レビュー |
+
+新診断は本文・URL・ヘッダー・Token・Account ID・APIメッセージ・数値エラーcode・ページ数を表示しない。GET集合、停止条件、サイズ、timeout、無retry、2巡照合、NO-GOは維持。実応答不明のまま自動ページ巡回やpagination許容へ変更しない。
+
+Ownerは更新済みevent-poster-v2で、対象Workerの所属Accountと名前をDashboard上でローカル確認後、既存Tokenのまま従来のPowerShellコマンドを私用コンソールで実行する。停止時はdetail付き診断行だけを共有する。例：
+
+```text
+OWNER_EVIDENCE_STOPPED phase=COLLECT apiAttempted=YES code=API_RESULT_REJECTED api=DEPLOYMENTS http=200 request=2 detail=MULTIPLE_PAGES
+```
+
+上記は想定例であり実測ではない。実API接続、資格情報閲覧、main更新、本番設定/Secrets/デプロイ/投稿は行っていない。本番NO-GOを維持する。

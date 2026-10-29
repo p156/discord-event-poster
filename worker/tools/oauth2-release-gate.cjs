@@ -9,6 +9,13 @@ const TOOL_PATHS=new Set(['package.json','README.md','worker/tools/oauth2-releas
 const sha=x=>crypto.createHash('sha256').update(x).digest('hex');
 class GateError extends Error {constructor(code){super('OAUTH_GATE_'+code);}}
 const fail=code=>{throw new GateError(code);};
+// Fixed local classifications only; never attach API errors, messages or values.
+function resultRejection(data){
+ if(data?.success!==true)return data?.success===false?'SUCCESS_FALSE':'SUCCESS_NOT_TRUE';
+ if(!Object.hasOwn(data,'result'))return 'RESULT_MISSING';
+ if(data.result_info?.total_pages>1)return 'MULTIPLE_PAGES';
+ return null;
+}
 function canonical(v){if(Array.isArray(v))return v.map(canonical);if(v&&typeof v==='object')return Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])]));return v;}
 const equal=(a,b,code)=>{if(JSON.stringify(canonical(a))!==JSON.stringify(canonical(b)))fail(code);};
 const HASH=/^[a-f0-9]{64}$/,COMMIT=/^[a-f0-9]{40}$/,UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -90,7 +97,7 @@ function reader(account,token,fetcher=globalThis.fetch){
  return async(resource,init={})=>{
   if(!permitted.has(resource)||Object.keys(init).some(k=>k!=='method')||init.method!==undefined&&init.method!=='GET')fail('READ_ONLY_GUARD');
   const controller=new AbortController();let timer;
-  try{return await Promise.race([(async()=>{const r=await fetcher('https://api.cloudflare.com/client/v4'+resource,{method:'GET',redirect:'manual',headers:{Authorization:'Bearer '+token},signal:controller.signal});if(!r.ok){void r.body?.cancel().catch(()=>{});fail(r.status===401||r.status===403?'AUTHORIZATION_REJECTED':r.status>=300&&r.status<400?'REDIRECT_REJECTED':'HTTP_REJECTED');}const data=await boundedJson(r,controller.signal);if(data?.success!==true||!Object.hasOwn(data,'result')||data.result_info?.total_pages>1)fail('API_RESULT_REJECTED');return data.result;})(),new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new GateError('NETWORK_OR_TIMEOUT'));},10000);})]);}
+  try{return await Promise.race([(async()=>{const r=await fetcher('https://api.cloudflare.com/client/v4'+resource,{method:'GET',redirect:'manual',headers:{Authorization:'Bearer '+token},signal:controller.signal});if(!r.ok){void r.body?.cancel().catch(()=>{});fail(r.status===401||r.status===403?'AUTHORIZATION_REJECTED':r.status>=300&&r.status<400?'REDIRECT_REJECTED':'HTTP_REJECTED');}const data=await boundedJson(r,controller.signal);const detail=resultRejection(data);if(detail){const error=new GateError('API_RESULT_REJECTED');error.detail=detail;throw error;}return data.result;})(),new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new GateError('NETWORK_OR_TIMEOUT'));},10000);})]);}
   catch(error){if(error instanceof GateError)throw error;fail('NETWORK_OR_TIMEOUT');}finally{clearTimeout(timer);controller.abort();}
  };
 }

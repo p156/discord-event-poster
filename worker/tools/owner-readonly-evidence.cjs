@@ -62,7 +62,8 @@ async function run(stream,fetcher=globalThis.fetch,args=process.argv){
  finally{if(credentials){credentials.account=null;credentials.token=null;}}
  } catch(error) {
  const code=error instanceof gate.GateError&&SAFE_CODES.has(error.message.slice('OAUTH_GATE_'.length))?error.message.slice('OAUTH_GATE_'.length):'VALIDATION_OR_INTERNAL';
- return {diagnostic:`OWNER_EVIDENCE_STOPPED phase=${phase} apiAttempted=${attempted?'YES':'NO'} code=${code}`+(attempted?` api=${api} http=${http} request=${request}`:'')};
+ const detail=code==='API_RESULT_REJECTED'&&['SUCCESS_FALSE','SUCCESS_NOT_TRUE','RESULT_MISSING','MULTIPLE_PAGES'].includes(error.detail)?` detail=${error.detail}`:'';
+ return {diagnostic:`OWNER_EVIDENCE_STOPPED phase=${phase} apiAttempted=${attempted?'YES':'NO'} code=${code}`+(attempted?` api=${api} http=${http} request=${request}`:'')+detail};
  }
 }
 module.exports={collect,input,run};
