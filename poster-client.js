@@ -76,7 +76,14 @@
           });
           cleanup?.();
           const r=await api('/api/oauth/complete','POST',{handoff,verifier});
-          if(!r.ok||typeof r.data.token!=='string'||!SESSION_TOKEN.test(r.data.token)||!Number.isSafeInteger(r.data.expiresAt)||Number(r.data.token.split('.')[2])!==r.data.expiresAt||r.data.expiresAt<=Date.now()||r.data.expiresAt>Date.now()+3600000)throw fail('LOGIN_FAILED');
+          // Fixed codes only: never attach the response, token or expiry to errors.
+          if(!r.ok)throw fail('LOGIN_COMPLETE_REJECTED');
+          if(!r.data||typeof r.data.token!=='string'||!SESSION_TOKEN.test(r.data.token))throw fail('LOGIN_TOKEN_INVALID');
+          if(!Number.isSafeInteger(r.data.expiresAt))throw fail('LOGIN_EXPIRY_INVALID');
+          if(Number(r.data.token.split('.')[2])!==r.data.expiresAt)throw fail('LOGIN_EXPIRY_MISMATCH');
+          const now=Date.now();
+          if(r.data.expiresAt<=now)throw fail('LOGIN_EXPIRED');
+          if(r.data.expiresAt>now+3600000)throw fail('LOGIN_CLOCK_AHEAD');
           session={token:r.data.token,expiresAt:r.data.expiresAt};
           try{const saved=JSON.stringify(session);sessionStorage.setItem(SESSION,saved);if(sessionStorage.getItem(SESSION)!==saved)throw fail('STORAGE_UNAVAILABLE');}catch{forgetSession();throw fail('STORAGE_UNAVAILABLE');}
           return true;

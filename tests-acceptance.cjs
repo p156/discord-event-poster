@@ -1,10 +1,10 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const {webcrypto,randomUUID}=require('node:crypto');
-function harness({outcome='succeeded',storageFail=false,enabled=true,saved,postThrow=false,mutateIntent}={}){
+function harness({outcome='succeeded',storageFail=false,enabled=true,saved,postThrow=false,mutateIntent,mutateLogin,loginStorageFail=false,loginStorageDrop=false,sessionStatus=200,completeStatus=200,completeJsonFail=false,completeNetworkFail=false}={}){
  const elements={},data=saved||new Map(),local=new Map([['discord-event-poster.webhook','PRIVATE_OLD_URL'],['other','keep']]),calls=[],alerts=[];
  const el=id=>elements[id]??={value:'',disabled:false,innerHTML:'',textContent:'',dataset:{},listeners:{},classList:{add(){},remove(){},toggle(){},contains(){return false}},addEventListener(k,f){this.listeners[k]=f;},focus(){}};
  const listeners={},popup={closed:false,close(){this.closed=true;}},uuid=randomUUID(),now=Date.now();
- const ctx={document:{getElementById:el,body:{appendChild(){}},createElement(type){return {appendChild(){},remove(){},submit(){setTimeout(()=>{listeners.message?.({origin:'https://evil.invalid',source:popup,data:{type:'discord-event-poster.oauth2',state:'a'.repeat(64),handoff:'f'.repeat(64)}});listeners.message?.({origin:'https://discord-event-poster-api.monma5435.workers.dev',source:{},data:{type:'discord-event-poster.oauth2',state:'a'.repeat(64),handoff:'e'.repeat(64)}});listeners.message?.({origin:'https://discord-event-poster-api.monma5435.workers.dev',source:popup,data:{type:'discord-event-poster.oauth2',state:'a'.repeat(64),handoff:'b'.repeat(64)}});},0);}};}},window:{scrollTo(){},open(){return popup;},addEventListener(type,fn){listeners[type]=fn;},removeEventListener(type){delete listeners[type];}},localStorage:{removeItem:k=>local.delete(k)},sessionStorage:{getItem:k=>data.get(k)||null,setItem:(k,v)=>{if(storageFail&&k.endsWith('operations.v1'))throw new Error('PRIVATE_STORAGE');data.set(k,v)},removeItem:k=>data.delete(k)},crypto:webcrypto,TextEncoder,URL,AbortController,setTimeout,clearTimeout,setInterval,clearInterval,alert:s=>alerts.push(s),confirm:()=>true,fetch:async(url,opts)=>{
+ const ctx={document:{getElementById:el,body:{appendChild(){}},createElement(type){return {appendChild(){},remove(){},submit(){setTimeout(()=>{listeners.message?.({origin:'https://evil.invalid',source:popup,data:{type:'discord-event-poster.oauth2',state:'a'.repeat(64),handoff:'f'.repeat(64)}});listeners.message?.({origin:'https://discord-event-poster-api.monma5435.workers.dev',source:{},data:{type:'discord-event-poster.oauth2',state:'a'.repeat(64),handoff:'e'.repeat(64)}});listeners.message?.({origin:'https://discord-event-poster-api.monma5435.workers.dev',source:popup,data:{type:'discord-event-poster.oauth2',state:'a'.repeat(64),handoff:'b'.repeat(64)}});},0);}};}},window:{scrollTo(){},open(){return popup;},addEventListener(type,fn){listeners[type]=fn;},removeEventListener(type){delete listeners[type];}},localStorage:{removeItem:k=>local.delete(k)},sessionStorage:{getItem:k=>data.get(k)||null,setItem:(k,v)=>{if(loginStorageDrop&&k.endsWith('session.oauth2'))return;if(loginStorageFail&&k.endsWith('session.oauth2'))throw new Error('PRIVATE_STORAGE');if(storageFail&&k.endsWith('operations.v1'))throw new Error('PRIVATE_STORAGE');data.set(k,v)},removeItem:k=>data.delete(k)},crypto:webcrypto,TextEncoder,URL,AbortController,setTimeout,clearTimeout,setInterval,clearInterval,alert:s=>alerts.push(s),confirm:()=>true,fetch:async(url,opts)=>{
    calls.push({url,opts});const path=new URL(url).pathname;let body;
    if(path==='/api/oauth/complete')body={token:'oauth2.'+'a'.repeat(64)+'.'+(now+3600000)+'.'+'b'.repeat(64),expiresAt:now+3600000};
    else if(path==='/api/session')body={authenticated:true,capabilities:{forumPosts:enabled,apiVersion:1,officialImagePreview:true,postPayloadVersions:[1,2]}};
@@ -12,7 +12,9 @@ function harness({outcome='succeeded',storageFail=false,enabled=true,saved,postT
    else if(path==='/api/forum/post-intents'){const p=JSON.parse(opts.body),hash=await ctx.window.PosterClient.hash(p);body={apiVersion:1,operationId:uuid,idempotencyKey:'v1.eA.'+'c'.repeat(64),payloadHash:hash,issuedAt:new Date(now).toISOString(),expiresAt:new Date(now+2592000000).toISOString(),status:'not_started'};}
    else {if(postThrow&&opts.method==='POST')throw new Error('PRIVATE_NETWORK');body={apiVersion:1,operationId:uuid,status:outcome,replayed:false,attempt:1,expiresAt:new Date(now+2592000000).toISOString(),safeToRetry:false,retryAfterSeconds:outcome==='retryable'?60:null,error:outcome==='unknown'?{code:'OUTCOME_UNKNOWN',message:'PRIVATE_UPSTREAM'}:null,result:outcome==='succeeded'?{guildId:'456',forumId:'123',threadId:'789',messageId:'790',url:'javascript:alert(1)'}:null};}
    if(path==='/api/forum/post-intents'&&mutateIntent)body=mutateIntent(body);
-   return {ok:true,status:200,headers:{get:()=>null},json:async()=>body};
+   if(path==='/api/oauth/complete'){if(completeNetworkFail)throw new Error('PRIVATE_NETWORK');if(mutateLogin)body=mutateLogin(body);}
+   const status=path==='/api/session'?sessionStatus:path==='/api/oauth/complete'?completeStatus:200;
+   return {ok:status>=200&&status<300,status,headers:{get:()=>null},json:async()=>{if(completeJsonFail&&path==='/api/oauth/complete')throw new Error('PRIVATE_JSON');return body;}};
  }};
  vm.createContext(ctx);for(const name of ['poster-client.js','app.js'])vm.runInContext(fs.readFileSync(name,'utf8'),ctx);
  const prepare=()=>{el('source').value='【東京】『試験』説明';el('parse').onclick();el('review').onclick();};
@@ -30,3 +32,40 @@ test('XSS escaped in cards/preview; no Webhook send/fallback source',()=>{const 
 
 test('forged postMessage origin/source ignored, only opening popup can complete login',async()=>{const h=harness();await h.login();const calls=h.calls.filter(c=>c.url.endsWith('/api/oauth/complete'));assert.equal(calls.length,1);assert.equal(JSON.parse(calls[0].opts.body).handoff,'b'.repeat(64));});
 test('popup blocked fails closed and legacy session removal preserves other storage',async()=>{const saved=new Map([['discord-event-poster.session','OLD_SESSION'],['other','keep'],['discord-event-poster.operations.v1','[]']]),h=harness({saved});assert.equal(saved.has('discord-event-poster.session'),false);assert.equal(saved.get('other'),'keep');assert.equal(saved.get('discord-event-poster.operations.v1'),'[]');h.ctx.window.open=()=>null;await h.login();assert.equal(h.calls.length,0);assert.match(h.el('auth-status').textContent,/ログインできません/);});
+
+// These cases reproduce each post-200 failure without contacting Discord or using credentials.
+const sessionKey='discord-event-poster.session.oauth2';
+const expiryReply=expiresAt=>({token:'oauth2.'+'a'.repeat(64)+'.'+expiresAt+'.'+'b'.repeat(64),expiresAt});
+for(const [name,options,code] of [
+ ['token shape',{mutateLogin:d=>({...d,token:'PRIVATE_TOKEN'})},'LOGIN_TOKEN_INVALID'],
+ ['null body',{mutateLogin:()=>null},'LOGIN_TOKEN_INVALID'],
+ ['expiry type',{mutateLogin:d=>({...d,expiresAt:String(d.expiresAt)})},'LOGIN_EXPIRY_INVALID'],
+ ['expiry mismatch',{mutateLogin:d=>({...d,expiresAt:d.expiresAt-1})},'LOGIN_EXPIRY_MISMATCH'],
+ ['expired',{mutateLogin:()=>expiryReply(Date.now()-1000)},'LOGIN_EXPIRED'],
+ ['server clock ahead',{mutateLogin:()=>expiryReply(Date.now()+3660000)},'LOGIN_CLOCK_AHEAD'],
+ ['storage throws',{loginStorageFail:true},'STORAGE_UNAVAILABLE'],
+ ['storage silently drops',{loginStorageDrop:true},'STORAGE_UNAVAILABLE'],
+ ['invalid JSON',{completeJsonFail:true},'RESPONSE_INVALID'],
+ ['network failure',{completeNetworkFail:true},'NETWORK_UNKNOWN'],
+ ['complete rejects',{completeStatus:503},'LOGIN_COMPLETE_REJECTED']
+])test('login diagnoses '+name+' without leaking response or starting posts',async()=>{
+ const h=harness({enabled:false,...options});h.prepare();await h.login();
+ const text=h.el('auth-status').textContent;
+ assert.ok(text.includes('complete/'+code));assert.ok(!text.includes('PRIVATE_'));assert.ok(!text.includes('oauth2.'));
+ assert.equal(h.data.has(sessionKey),false);assert.equal(h.calls.some(c=>c.url.endsWith('/api/session')),false);
+ assert.equal(h.calls.some(c=>c.url.includes('/api/forum/')),false);assert.equal(h.el('worker-login').disabled,false);
+});
+test('session 401 after successful complete clears saved session and identifies second stage',async()=>{
+ const h=harness({enabled:false,sessionStatus:401});await h.login();
+ assert.match(h.el('auth-status').textContent,/session\/SESSION_EXPIRED/);assert.equal(h.data.has(sessionKey),false);
+ assert.equal(h.calls.filter(c=>c.url.endsWith('/api/session')).length,1);
+});
+test('51 minutes remaining passes validation and retains session with posts disabled',async()=>{
+ const h=harness({enabled:false,mutateLogin:()=>expiryReply(Date.now()+3060000)});await h.login();
+ assert.match(h.el('auth-status').textContent,/ログインしました/);assert.match(h.el('auth-status').textContent,/まだ公開/);
+ assert.equal(h.data.has(sessionKey),true);assert.equal(h.calls.some(c=>c.url.includes('/api/forum/')),false);
+});
+test('unknown exception text and code are never displayed as login diagnostics',async()=>{
+ const h=harness();h.ctx.window.open=()=>{throw {code:'PRIVATE_TOKEN',message:'PRIVATE_SECRET'};};await h.login();
+ assert.match(h.el('auth-status').textContent,/complete\/LOGIN_UNKNOWN/);assert.ok(!h.el('auth-status').textContent.includes('PRIVATE_'));
+});
