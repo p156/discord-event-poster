@@ -14,8 +14,60 @@ const v2=()=>({...payload(),apiVersion:2,officialUrl:official,imageUrl:null});
 // separately in image-runtime.mjs; this double makes no HTML parsing claim.
 class MetadataRewriter{on(selector,handler){assert.equal(selector,'head meta');this.handler=handler;return this;}transform(response){this.handler.element({getAttribute:k=>k==='property'?'og:image':k==='content'?'/image.png':null});return response;}}
 const previewRequest=(h,p=v2(),headers={})=>h.request('/api/forum/image-preview','POST',p,undefined,h.token,headers);
-async function setup(options={}){const h=await fixture(options);h.external=[];h.previewHandler=createImagePreviewHandler({Rewriter:MetadataRewriter,fetchImpl:async(url,opts)=>{h.external.push({url,opts});return url===official?new Response('<head></head>',{headers:{'Content-Type':'text/html'}}):new Response(png,{headers:{'Content-Type':'image/png'}});}});h.preview=async p=>{const {imageUrl,...raw}=p||v2();const r=await h.previewHandler(previewRequest(h,raw),h.env);return {response:r,...await r.json()};};h.env.FORUM_POSTS_ENABLED='true';return h;}
+async function setup(options={}){let h;h=await fixture({...options,imageFetchImpl:async(url,opts)=>{h.attachmentGets=(h.attachmentGets||0)+1;assert.deepEqual(Object.keys(opts.headers),['Accept']);return options.imageFetchImpl?options.imageFetchImpl(url,opts):new Response(png,{headers:{'Content-Type':'image/png'}});}});h.external=[];h.previewHandler=createImagePreviewHandler({Rewriter:MetadataRewriter,fetchImpl:async(url,opts)=>{h.external.push({url,opts});return url===official?new Response('<head></head>',{headers:{'Content-Type':'text/html'}}):new Response(png,{headers:{'Content-Type':'image/png'}});}});h.preview=async p=>{const {imageUrl,...raw}=p||v2();const r=await h.previewHandler(previewRequest(h,raw),h.env);return {response:r,...await r.json()};};h.env.FORUM_POSTS_ENABLED='true';return h;}
 function intent(preview,p=v2()){return {...p,imageUrl:preview.imageUrl,previewTicket:preview.previewTicket};}
+
+async function decodeWrite(call){
+ const {opts}=call;
+ if(opts.headers['Content-Type']==='application/json')return {body:JSON.parse(opts.body),file:null};
+ const form=await new Response(opts.body,{headers:{'Content-Type':opts.headers['Content-Type']}}).formData();
+ return {body:JSON.parse(form.get('payload_json')),file:form.get('files[0]')};
+}
+test('attachment GET occurs only after durable sending; invalid, oversized, unsafe and failed images fall back before one write',async()=>{
+ for(const imageFetchImpl of [
+  async()=>{throw Error('IMAGE_NETWORK_FAILURE');},
+  async()=>new Response('<html>bad</html>',{headers:{'Content-Type':'image/png'}}),
+  async()=>new Response(png,{headers:{'Content-Type':'image/svg+xml'}}),
+  async()=>new Response(new Uint8Array(2097153),{headers:{'Content-Type':'image/png','Content-Length':'1'}}),
+  async()=>new Response(null,{status:302,headers:{Location:'https://127.0.0.1/private'}}),
+ ]){
+  let h;h=await setup({imageFetchImpl:async(...args)=>{assert.equal([...h.storage.data].find(([k])=>k.startsWith('posts:operation:'))[1].status,'sending');return imageFetchImpl(...args);}});
+  const base={...v2(),content:'本文\n'+official},p=await h.preview(base),i=await h.issue(intent(p,base)),send={...base,imageUrl:p.imageUrl};
+  assert.equal((await h.submit(i,send)).status,201);assert.equal(h.writes,1);const {body,file}=await decodeWrite(h.calls.find(c=>c.opts.method==='POST'));assert.equal(file,null);assert.equal(body.message.content,base.content);assert.equal(body.message.embeds,undefined);assert.equal(body.message.flags,undefined);assert.equal(body.message.attachments,undefined);
+  assert.equal((await h.submit(i,send)).status,200);assert.equal(h.writes,1);assert.equal(h.attachmentGets,1);
+ }
+});
+test('target realdgame URL remains plain content without fetching or explicit embeds',async()=>{
+ const h=await setup(),base={...v2(),officialUrl:'https://realdgame.jp/s/fgo2026/',content:'公式サイト\nhttps://realdgame.jp/s/fgo2026/'},p=await h.preview(base);
+ assert.equal(p.reasonCode,'IMAGE_HOST_REJECTED');const i=await h.issue(intent(p,base));assert.equal((await h.submit(i,{...base,imageUrl:null})).status,201);
+ assert.equal(h.external.length,0);assert.equal(h.attachmentGets,undefined);const {body,file}=await decodeWrite(h.calls.find(c=>c.opts.method==='POST'));assert.equal(file,null);assert.equal(body.message.content,base.content);assert.equal(body.message.embeds,undefined);assert.equal(body.message.flags,undefined);
+});
+test('definite multipart 400/413 rejection falls back once in the same durable attempt, concurrent callers never create twice',async()=>{
+ for(const status of [400,413]){
+  let h;h=await setup({post:async(url,opts)=>{const {file}=await decodeWrite({opts});if(file)return new Response(null,{status});return Response.json({id:'789',type:11,parent_id:'123',guild_id:'456',message:{id:'790',channel_id:'789'}});}});
+  const p=await h.preview(),i=await h.issue(intent(p)),send={...v2(),imageUrl:p.imageUrl};const results=await Promise.all(Array.from({length:12},()=>h.submit(i,send)));
+  assert.ok(results.every(r=>[200,201,202].includes(r.status)));assert.equal(h.writes,2);assert.equal(h.attachmentGets,1);const writes=h.calls.filter(c=>c.opts.method==='POST');assert.ok((await decodeWrite(writes[0])).file);assert.equal((await decodeWrite(writes[1])).file,null);
+  const state=await (await h.status(i)).json();assert.equal(state.status,'succeeded');assert.equal(state.attempt,1);assert.equal((await h.submit(i,send)).status,200);assert.equal(h.writes,2);
+ }
+});
+test('ambiguous multipart results never trigger text fallback or resend, including a lost fallback response',async()=>{
+ for(const mode of ['network','timeout',200,201,301,401,403,404,429,500,502,503,'fallback-lost']){
+  let h;h=await setup({timeoutMs:15,post:async()=>{
+   if(mode==='network')throw Error('LOST');if(mode==='timeout')return new Promise(()=>{});
+   if(mode==='fallback-lost'){if(h.writes===1)return new Response(null,{status:400});throw Error('LOST_TEXT_RESPONSE');}
+   if(mode===200||mode===201)return Response.json({wrong:'receipt'},{status:mode});
+   if(mode===429)return Response.json({retry_after:60},{status:429});return new Response(null,{status:mode});
+  }});
+  const p=await h.preview(),i=await h.issue(intent(p)),send={...v2(),imageUrl:p.imageUrl};await h.submit(i,send);
+  assert.equal(h.writes,mode==='fallback-lost'?2:1,String(mode));await h.submit(i,send);assert.equal(h.writes,mode==='fallback-lost'?2:1,String(mode));
+ }
+});
+test('local multipart construction failure sends text once without a partial Discord request',async()=>{
+ const h=await setup(),p=await h.preview(),i=await h.issue(intent(p)),original=globalThis.FormData;
+ try{globalThis.FormData=class {constructor(){throw Error('LOCAL_FORM_FAILURE');}};assert.equal((await h.submit(i,{...v2(),imageUrl:p.imageUrl})).status,201);}
+ finally{globalThis.FormData=original;}
+ assert.equal(h.writes,1);assert.equal((await decodeWrite(h.calls.find(c=>c.opts.method==='POST'))).file,null);
+});
 test('exact HTTPS public host policy rejects all SSRF spellings before any fetch',async()=>{
  const bad=['http://realescapegame.jp/','https://realescapegame.jp.evil.test/','https://realescapegame.jp./','https://user:pass@realescapegame.jp/','https://realescapegame.jp:8443/','https://127.0.0.1/','https://2130706433/','https://0x7f000001/','https://0177.0.0.1/','https://[::1]/','https://localhost/','https://metadata.google.internal/','file:///etc/passwd','https://%72ealescapegame.jp/','https://realescapegame.jp\\@evil.test/','https://ｒealescapegame.jp/'];
  let calls=0;for(const url of bad){assert.equal(officialPolicy(url),null,url);const r=await findOfficialImage(url,{fetchImpl:async()=>{calls++;throw Error();}});assert.equal(r.imageUrl,null);}assert.equal(calls,0);
@@ -35,7 +87,7 @@ test('bounded streams cancel after size and enforce slow headers/body deadline; 
 test('image lookup success uses new headerless GET; signed snapshot persists; parallel same-key sends once',async()=>{
  const h=await setup(),p=await h.preview();assert.equal(p.response.status,200);assert.equal(p.status,'image');assert.equal(h.external.length,2);for(const c of h.external)assert.deepEqual(Object.keys(c.opts.headers),['Accept']);
  const input=intent(p),i=await h.issue(input);assert.equal(i.response.status,201);const frozen=await h.storage.get('posts:operation:'+i.operationId);assert.deepEqual(frozen.imageSnapshot,{officialUrl:official,imageUrl:image,source:'og:image'});
- const sendPayload={...input};delete sendPayload.previewTicket;const results=await Promise.all(Array.from({length:12},()=>h.submit(i,sendPayload)));assert.ok(results.every(r=>[200,201,202].includes(r.status)));assert.equal(h.writes,1);assert.equal(h.external.length,2);const write=h.calls.find(c=>c.opts.method==='POST');assert.deepEqual(JSON.parse(write.opts.body).message.embeds,[{title:'題',url:official,image:{url:image}}]);
+ const sendPayload={...input};delete sendPayload.previewTicket;const results=await Promise.all(Array.from({length:12},()=>h.submit(i,sendPayload)));assert.ok(results.every(r=>[200,201,202].includes(r.status)));assert.equal(h.writes,1);assert.equal(h.external.length,2);const write=h.calls.find(c=>c.opts.method==='POST');const form=await new Response(write.opts.body,{headers:{'Content-Type':write.opts.headers['Content-Type']}}).formData();const sent=JSON.parse(form.get('payload_json'));assert.equal(sent.message.embeds,undefined);assert.equal(sent.message.flags,undefined);assert.deepEqual(sent.message.attachments,[{id:0,filename:'official-image.png'}]);assert.deepEqual(new Uint8Array(await form.get('files[0]').arrayBuffer()),png);assert.equal(h.attachmentGets,1);
  h.restart();assert.equal((await h.submit(i,sendPayload)).status,200);assert.equal(h.writes,1);
 });
 test('confirmation tamper, mismatch, expiry, signature domain and replay never issue another operation',async()=>{
@@ -45,7 +97,7 @@ test('confirmation tamper, mismatch, expiry, signature domain and replay never i
  const two=await Promise.all([h.issue(intent(p)),h.issue(intent(p))]);assert.deepEqual(two.map(i=>i.response.status).sort(),[201,409]);assert.equal(h.writes,0);
 });
 test('image-less fallback is signed; user image/unknown/duplicate fields rejected; OAuth and boundary failures perform zero GET',async()=>{
- const h=await setup();const none={...v2(),officialUrl:'https://not-allowed.example/event'};const p=await h.preview(none);assert.equal(p.status,'no_image');assert.equal(h.external.length,0);const i=await h.issue(intent(p,none));assert.equal(i.response.status,201);const sendPayload={...intent(p,none)};delete sendPayload.previewTicket;assert.equal((await h.submit(i,sendPayload)).status,201);assert.equal(JSON.parse(h.calls.find(c=>c.opts.method==='POST').opts.body).message.embeds[0].image,undefined);
+ const h=await setup();const none={...v2(),officialUrl:'https://not-allowed.example/event'};const p=await h.preview(none);assert.equal(p.status,'no_image');assert.equal(h.external.length,0);const i=await h.issue(intent(p,none));assert.equal(i.response.status,201);const sendPayload={...intent(p,none)};delete sendPayload.previewTicket;assert.equal((await h.submit(i,sendPayload)).status,201);assert.equal(JSON.parse(h.calls.find(c=>c.opts.method==='POST').opts.body).message.embeds,undefined);
  for(const raw of [{...v2(),imageUrl:image},{...v2(),upload:'x'},{...v2(),embeds:[]}])assert.equal((await h.previewHandler(previewRequest(h,raw),h.env)).status,400);
  for(const headers of [{Authorization:'Bearer old-session'},{Origin:'https://evil.test'},{Host:'evil.test'}])assert.ok((await h.previewHandler(previewRequest(h,{},headers),h.env)).status>=400);
  const duplicate=new Request(previewRequest(h),{body:'{"apiVersion":2,"apiVersion":2}'});assert.equal((await h.previewHandler(duplicate,h.env)).status,400);assert.equal(h.external.length,0);
@@ -66,8 +118,8 @@ test('v1 normalization/hash unchanged; v2 ignores ticket freshness; changed imag
  const h=await setup({post:()=>new Response(null,{status:500})}),p=await h.preview(),i=await h.issue(intent(p));const sendPayload={...v2(),imageUrl:p.imageUrl};assert.equal((await h.submit(i,{...sendPayload,imageUrl:null})).status,409);assert.equal((await h.submit(i,sendPayload)).status,502);assert.equal((await h.submit(i,sendPayload)).status,502);assert.equal(h.writes,1);
  const c=await createPreviewClaims(sendPayload,{imageUrl:image,source:'og:image',reasonCode:null},'123');assert.notEqual(c.ticketId,(await verifyPreview(p.previewTicket,h.env.SESSION_SIGNING_KEY)).ticketId);assert.equal(await payloadHash(sendPayload),await payloadHash({...sendPayload}));
 });
-test('issued image operation resumes without preview storage across logout/relogin; no external fetch',async()=>{
- const h=await setup(),p=await h.preview(),i=await h.issue(intent(p));const claims=await verifyPreview(p.previewTicket,h.env.SESSION_SIGNING_KEY);await h.storage.delete('images:ticket:'+claims.ticketId);await imageCall(h.env,{action:'logout',token:h.token},false);h.token=await h.session();h.restart();assert.equal((await h.submit(i,{...v2(),imageUrl:p.imageUrl},h.token)).status,201);assert.equal(h.external.length,2);assert.equal(h.writes,1);
+test('issued image operation resumes without preview storage across logout/relogin; one validated image fetch',async()=>{
+ const h=await setup(),p=await h.preview(),i=await h.issue(intent(p));const claims=await verifyPreview(p.previewTicket,h.env.SESSION_SIGNING_KEY);await h.storage.delete('images:ticket:'+claims.ticketId);await imageCall(h.env,{action:'logout',token:h.token},false);h.token=await h.session();h.restart();assert.equal((await h.submit(i,{...v2(),imageUrl:p.imageUrl},h.token)).status,201);assert.equal(h.external.length,2);assert.equal(h.attachmentGets,1);assert.equal(h.writes,1);
 });
 test('image bytes cap ignores Content-Length; invalid MIME and thumbnail secret headers never pass',async()=>{
  await assert.rejects(()=>fetchThumbnail(official,image,{fetchImpl:async()=>new Response(new Uint8Array(2097153),{headers:{'Content-Type':'image/png','Content-Length':'1'}})}),/IMAGE_TOO_LARGE/);

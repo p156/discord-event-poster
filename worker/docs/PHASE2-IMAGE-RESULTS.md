@@ -1,5 +1,7 @@
 # Phase 2: 公式画像プレビュー・Discord Embed
 
+> 以下は旧実装の検証記録です。2026-11-05のローカル変更で独自Embedを廃止し、投稿時に画像を再検証してファイル添付する方式へ変更しました。現行仕様は[変更記録](STANDARD-EMBED-ATTACHMENTS-20261105.md)を参照してください。
+
 2026-10-13 JST。基準 `553724417c91c005104d169598a20c027ca08bc2`、開発ブランチ `event-poster-v2`。
 既存計画 `phase2-image-investigation-plan-20261013.md` に基づく実装。
 

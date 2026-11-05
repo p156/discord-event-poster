@@ -17,13 +17,13 @@ export class TestStorage {
 export const payload=()=>({apiVersion:1,threadName:'題',content:'PRIVATE_EVENT_BODY',tagIds:[]});
 export const forum=()=>({id:'123',guild_id:'456',type:15,flags:0,available_tags:[]});
 export const receipt=()=>({id:'789',type:11,parent_id:'123',guild_id:'456',message:{id:'790',channel_id:'789'}});
-export async function fixture({storage=new TestStorage(),post,preflight,timeoutMs}={}){
+export async function fixture({storage=new TestStorage(),post,preflight,imageFetchImpl=async()=>{throw Error('REAL_IMAGE_NETWORK_DISABLED');},timeoutMs}={}){
   const env={...oauthBindings(),ALLOWED_ORIGIN:'https://poster.example',DISCORD_BOT_TOKEN:'PRIVATE_TEST_BOT',DISCORD_FORUM_CHANNEL_ID:'123',SESSION_SIGNING_KEY:'a'.repeat(64)};
   const h={env,storage,calls:[],writes:0,post,preflight};
   h.object=new AuthState({storage},env);env.AUTH_STATE={idFromName:n=>{if(n!=='personal-auth-v1')throw new Error('Wrong scope');return 0;},get:()=>({fetch:r=>h.object.fetch(r)})};
   h.session=async()=> (await issueSession(storage,env)).token;
   h.token=await h.session();
-  h.handler=createPostHandler({timeoutMs,fetchImpl:async(url,opts)=>{h.calls.push({url,opts});if(opts.method==='POST'){h.writes++;storage.events.push('DISCORD_WRITE');return h.post?h.post(url,opts):Response.json(receipt());}return h.preflight?h.preflight(url,opts):Response.json(forum());}});
+  h.handler=createPostHandler({timeoutMs,imageFetchImpl,fetchImpl:async(url,opts)=>{h.calls.push({url,opts});if(opts.method==='POST'){h.writes++;storage.events.push('DISCORD_WRITE');return h.post?h.post(url,opts):Response.json(receipt());}return h.preflight?h.preflight(url,opts):Response.json(forum());}});
   h.request=(path,method='POST',body=payload(),key,token=h.token,headers={})=>new Request('https://discord-event-poster-api.monma5435.workers.dev'+path,{method,headers:{Origin:env.ALLOWED_ORIGIN,Authorization:'Bearer '+token,'Content-Type':'application/json',...(key?{'Idempotency-Key':key}:{}),...headers},...(method==='POST'?{body:JSON.stringify(body)}:{})});
   h.call=(...args)=>h.handler(h.request(...args),env);
   h.issue=async(p=payload())=>{const r=await h.call('/api/forum/post-intents','POST',p);return {response:r,...await r.json()};};

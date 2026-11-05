@@ -23,6 +23,7 @@ async function setup({enabled=true,mode=null,drop=false,storageFail=false,width=
    entry.status=response.status;
    if(u.pathname==='/api/forum/image-preview'&&h.holdPreview)await new Promise(resolve=>{h.releasePreview=resolve;});
    entry.writes=Number(response.headers.get('X-Test-Writes'));
+   entry.discordMessage=response.headers.has('X-Test-Message')?JSON.parse(decodeURIComponent(response.headers.get('X-Test-Message'))):null;entry.attached=response.headers.get('X-Test-Attached');
    if(u.pathname==='/api/oauth/start'){
      // Playwright redirects may bypass subsequent route interception. Assert the real
      // 303, then use a fresh navigation so every hop stays in the strict mock boundary.

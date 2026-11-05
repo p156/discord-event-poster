@@ -87,11 +87,14 @@ OAuth2移行では新しい認証専用Secretを追加します。既存Secret�
 停止時も履歴・署名鍵・Durable Objectを削除しないでください。
 Step 5の検証結果は[検証記録](worker/docs/phase3/STEP5-RESULTS.md)を参照してください。
 
-## Phase 2 公式画像とEmbed（開発ブランチ）
+## Phase 2 公式画像添付と標準リンクEmbed（開発ブランチ）
 
 認証済みプレビューで公式サイトのog:image、次にtwitter:imageを取得します。
 取得失敗・未許可ホストは画像なしで投稿できます。手動画像URL/アップロードはありません。
-投稿時は確認済み結果を操作レコードから使用し、公式サイトへ再接続しません。
+本文URLを残し、独自の`embeds`や抑制フラグを送らずDiscord標準のリンクプレビューに委ねます。
+投稿時は操作レコードの確認済み画像URLを再検証・取得し、成功した場合だけ画像ファイルを添付します。
+画像取得・添付準備の失敗時は通常投稿します。Discordが添付リクエストを400/413で明確に拒否した場合だけ、同じ操作内で添付なしを1回送信します。結果不明時は再送しません。
+方式・検証・表示上の限界は[標準Embedと添付の変更記録](worker/docs/STANDARD-EMBED-ATTACHMENTS-20261105.md)を参照してください。
 対応ホスト、API、SSRF境界、検証結果と限界は[Phase 2実装結果](worker/docs/PHASE2-IMAGE-RESULTS.md)を参照してください。
 画像専用検証は `npm run test:image-runtime` と `npm run test:image-browser` です。
 本番公開は未実施です。

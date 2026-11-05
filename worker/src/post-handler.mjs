@@ -21,7 +21,7 @@ function stateReply(answer,requestId,origin,explicit){
   if(!status)status=r.status==='succeeded'?(r.replayed?200:201):['preparing','sending'].includes(r.status)?202:r.status==='unknown'?502:r.error?.code?.endsWith('RATE_LIMITED')?429:r.error?.code?.startsWith('TAG_')?422:r.error?.code==='SERVICE_UNAVAILABLE'?503:r.status==='failed'?502:200;
   return reply({...r,requestId},status,origin,{Location:'/api/forum/posts/'+r.operationId,...(r.retryAfterSeconds?{'Retry-After':String(r.retryAfterSeconds)}:status===202?{'Retry-After':'2'}:{})});
 }
-export function createPostHandler({fetchImpl,timeoutMs}={}){
+export function createPostHandler({fetchImpl,imageFetchImpl=fetchImpl,timeoutMs}={}){
   return async function handle(request,env){
     const requestId=crypto.randomUUID();let origin=null,claims,begin;
     try{
@@ -57,7 +57,7 @@ export function createPostHandler({fetchImpl,timeoutMs}={}){
       if(!['not_started','retryable'].includes(current.record.status)||!current.record.safeToRetry)return stateReply(current,requestId,origin);
       if(claims.forumId!==env.DISCORD_FORUM_CHANNEL_ID)throw new OperationError('TARGET_CHANGED',409);
       if(claims.expiresAt-Date.now()<120000)throw new OperationError('OPERATION_EXPIRING',409);
-      const prepared=await prepareForumPost(env,frozenPayload,{fetchImpl:createDiscordFetch(env,token,fetchImpl),timeoutMs});
+      const prepared=await prepareForumPost(env,frozenPayload,{fetchImpl:createDiscordFetch(env,token,fetchImpl),imageFetchImpl,timeoutMs});
       if(prepared.outcome!=='prepared'){const answer=await call(env,{action:'post.preflight-failure',token,claims,failure:{code:prepared.code==='FORUM_RESPONSE_INVALID'?'SERVICE_UNAVAILABLE':prepared.code,safeToRetry:prepared.safeToRetry,httpStatus:prepared.httpStatus,retry:prepared.retry}});return stateReply(answer,requestId,origin,prepared.httpStatus);}
       const reserved=await call(env,{action:'post.reserve',token,claims});
       if(!reserved.leaseId)return stateReply(reserved,requestId,origin);

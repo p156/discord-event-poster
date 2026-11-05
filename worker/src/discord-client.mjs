@@ -36,12 +36,23 @@ async function readBytes(response,signal){
   try{while(true){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>65536){cancel();throw new DiscordTransportError('RESPONSE_TOO_LARGE',response.status);}chunks.push(value);}const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}catch{throw new DiscordTransportError('JSON_INVALID',response.status);}}
   finally{signal.removeEventListener('abort',cancel);try{reader.releaseLock();}catch{}}
 }
-async function requestJson(env,path,{method='GET',body,fetchImpl=globalThis.fetch,timeoutMs=10000}={}){
+// Fully serialize locally before starting a Discord request. Boundary and file
+// headers are generated together; construction failure can safely omit the file.
+export async function forumUpload(body,image){
+  const extension={'image/png':'png','image/jpeg':'jpg','image/gif':'gif','image/webp':'webp'}[image.mime];
+  if(!extension)throw new Error('IMAGE_TYPE_REJECTED');
+  const filename='official-image.'+extension,form=new FormData();
+  form.set('payload_json',JSON.stringify({...body,message:{...body.message,attachments:[{id:0,filename}]}}));
+  form.set('files[0]',new Blob([image.bytes],{type:image.mime}),filename);
+  const request=new Request(BASE,{method:'POST',body:form});
+  return {body:await request.arrayBuffer(),contentType:request.headers.get('Content-Type')};
+}
+async function requestJson(env,path,{method='GET',body,upload,fetchImpl=globalThis.fetch,timeoutMs=10000}={}){
   if(typeof fetchImpl!=='function'||!Number.isInteger(timeoutMs)||timeoutMs<1||timeoutMs>10000)throw new DiscordTransportError('CONFIG_INVALID');
   const config=fixedDiscordConfig(env),controller=new AbortController();let timer,response;
   const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new DiscordTransportError('TIMEOUT',response?.status??null,response?.status===429?rateInfo(response,null,false,config.DISCORD_BOT_TOKEN):null));},timeoutMs);});
   const task=(async()=>{
-    response=await fetchImpl(BASE+path,{method,headers:{...headers(config),...(body?{'Content-Type':'application/json'}:{})},redirect:'manual',credentials:'omit',referrerPolicy:'no-referrer',signal:controller.signal,...(body?{body:JSON.stringify(body)}:{})});
+    response=await fetchImpl(BASE+path,{method,headers:{...headers(config),...(body?{'Content-Type':upload?upload.contentType:'application/json'}:{})},redirect:'manual',credentials:'omit',referrerPolicy:'no-referrer',signal:controller.signal,...(body?{body:upload?upload.body:JSON.stringify(body)}:{})});
     const status=response.status;
     if(status>=300&&status<400){void response.body?.cancel().catch(()=>{});throw new DiscordTransportError('REDIRECT',status);}
     if(status===429){let value=null,valid=false;try{value=await readBytes(response,controller.signal);valid=Boolean(value&&typeof value==='object'&&!Array.isArray(value));}catch{}return {status,body:null,rate:rateInfo(response,value,valid,config.DISCORD_BOT_TOKEN)};}
