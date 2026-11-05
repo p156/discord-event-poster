@@ -4,7 +4,9 @@ const path=require('node:path');
 const crypto=require('node:crypto');
 const {chromium}=require('playwright');
 const root=path.resolve(__dirname,'..');
-const base='https://p156.github.io/discord-event-poster/';
+const base=process.env.PAGES_VERIFY_BASE||'https://p156.github.io/discord-event-poster/';
+const siteUrl=new URL(base);
+const output=process.env.PAGES_VERIFY_OUTPUT?path.resolve(process.env.PAGES_VERIFY_OUTPUT):path.join(root,'work','browser-acceptance');
 const normalize=s=>s.replace(/\r\n/g,'\n').trim();
 const sha=s=>crypto.createHash('sha256').update(normalize(s)).digest('hex');
 async function main(){
@@ -17,7 +19,7 @@ async function main(){
     result.assets.push({name,status:response.status,normalizedSha256:sha(remote),match:true});
     console.log('PASS published source '+name);
   }
-  for(const name of ['tests/browser-acceptance.cjs','tests/pages-verify.cjs','tests-acceptance.cjs','tests-v010.js','package.json','package-lock.json','work/browser-acceptance/results.json']){
+  for(const name of ['README.md','ACCEPTANCE.md','ACCEPTANCE.html','worker/src/index.mjs','worker/wrangler.jsonc','tests/browser-acceptance.cjs','tests/pages-verify.cjs','tests-acceptance.cjs','tests-v010.js','package.json','package-lock.json','work/browser-acceptance/results.json']){
     const response=await fetch(base+name+'?verify='+Date.now());
     assert.equal(response.status,404,name+' dev file must not be published');
     result.excluded.push({name,status:response.status});
@@ -30,7 +32,7 @@ async function main(){
       const blocked=[],errors=[],logs=[],failed=[];
       await context.route('**/*',route=>{
         const request=route.request(),u=new URL(request.url());
-        if(u.origin==='https://p156.github.io'&&u.pathname.startsWith('/discord-event-poster/')&&request.method()==='GET')return route.continue();
+        if(u.origin===siteUrl.origin&&u.pathname.startsWith(siteUrl.pathname)&&request.method()==='GET')return route.continue();
         blocked.push(u.origin);return route.abort();
       });
       const page=await context.newPage();
@@ -46,12 +48,12 @@ async function main(){
         assert.equal(dom.scriptReady,true);assert.match(dom.preview,/公開確認/);assert.ok(dom.scroll<=dom.width);
         assert.equal(errors.length,0);assert.equal(logs.length,0);assert.equal(failed.length,0);assert.equal(blocked.length,0);
         result.browser.push({width,status:'PASS',...dom,jsErrors:errors.length,consoleErrors:logs.length});
-        await fs.mkdir(path.join(root,'work','browser-acceptance'),{recursive:true});
-        await page.screenshot({path:path.join(root,'work','browser-acceptance','published-'+width+'.png'),fullPage:true});
+        await fs.mkdir(output,{recursive:true});
+        await page.screenshot({path:path.join(output,'published-'+width+'.png'),fullPage:true});
         console.log('PASS published browser '+width);
       }finally{await context.close();}
     }
   }finally{await browser.close();}
-  await fs.writeFile(path.join(root,'work','browser-acceptance','pages.json'),JSON.stringify(result,null,2));
+  await fs.writeFile(path.join(output,'pages.json'),JSON.stringify(result,null,2));
 }
 main().catch(e=>{console.error(e.message);process.exitCode=1;});

@@ -1,5 +1,7 @@
-# Dev dependencies and test fixtures must not be part of the Pages site.
+# Keep repository documentation, dev dependencies and test fixtures off the Pages site.
 exclude:
+  - README.md
+  - ACCEPTANCE.md
   - worker
   - node_modules
   - work
