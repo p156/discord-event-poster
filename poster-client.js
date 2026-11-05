@@ -83,7 +83,8 @@
           if(Number(r.data.token.split('.')[2])!==r.data.expiresAt)throw fail('LOGIN_EXPIRY_MISMATCH');
           const now=Date.now();
           if(r.data.expiresAt<=now)throw fail('LOGIN_EXPIRED');
-          if(r.data.expiresAt>now+3600000)throw fail('LOGIN_CLOCK_AHEAD');
+          // Accept at most 30s of clock skew; the Worker still enforces exactly SESSION_MS.
+          if(r.data.expiresAt>now+3600000+30000)throw fail('LOGIN_CLOCK_AHEAD');
           session={token:r.data.token,expiresAt:r.data.expiresAt};
           try{const saved=JSON.stringify(session);sessionStorage.setItem(SESSION,saved);if(sessionStorage.getItem(SESSION)!==saved)throw fail('STORAGE_UNAVAILABLE');}catch{forgetSession();throw fail('STORAGE_UNAVAILABLE');}
           return true;
