@@ -1,14 +1,26 @@
 import {allowedUrl,officialPolicy} from './official-image-policy.mjs';
 export class ImageFetchError extends Error {constructor(code){super(code);this.code=code;}}
 const reject=code=>{throw new ImageFetchError(code);};
-export async function boundedBytes(response,max,signal){
-  const reader=response.body?.getReader();if(!reader)return new Uint8Array();const parts=[];let size=0;
+async function boundedParts(response,max,signal){
+  const reader=response.body?.getReader();if(!reader)return {parts:[],size:0};const parts=[];let size=0;
   const abort=()=>{void reader.cancel().catch(()=>{});};signal?.addEventListener('abort',abort,{once:true});
-  try{while(true){if(signal?.aborted)reject('IMAGE_TIMEOUT');const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>max)reject('IMAGE_TOO_LARGE');parts.push(value);}if(signal?.aborted)reject('IMAGE_TIMEOUT');const bytes=new Uint8Array(size);let offset=0;for(const part of parts){bytes.set(part,offset);offset+=part.length;}return bytes;}
+  try{while(true){if(signal?.aborted)reject('IMAGE_TIMEOUT');const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>max)reject('IMAGE_TOO_LARGE');parts.push(value);}if(signal?.aborted)reject('IMAGE_TIMEOUT');return {parts,size};}
   finally{signal?.removeEventListener('abort',abort);void reader.cancel().catch(()=>{});try{reader.releaseLock();}catch{}}
 }
+export async function boundedBytes(response,max,signal){
+ const {parts,size}=await boundedParts(response,max,signal),bytes=new Uint8Array(size);let offset=0;
+ for(const part of parts){bytes.set(part,offset);offset+=part.length;}return bytes;
+}
+async function boundedImage(response,mime,signal){
+ const {parts,size}=await boundedParts(response,2097152,signal);
+ // Existing format checks inspect at most 24 bytes. Keep that small prefix,
+ // and snapshot the chunks into a Blob without a full-size concatenated array.
+ const bytes=new Uint8Array(Math.min(size,24));let offset=0;
+ for(const part of parts){const count=Math.min(part.length,bytes.length-offset);bytes.set(part.subarray(0,count),offset);offset+=count;if(offset===bytes.length)break;}
+ return {bytes,blob:new Blob(parts,{type:mime})};
+}
 async function timed(fn,timeoutMs){const controller=new AbortController();let timer;const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new ImageFetchError('IMAGE_TIMEOUT'));},timeoutMs);});try{return await Promise.race([fn(controller.signal),deadline]);}finally{clearTimeout(timer);controller.abort();}}
-async function retrieve(raw,hosts,kind,signal,fetchImpl){
+async function retrieve(raw,hosts,kind,signal,fetchImpl,attachment=false){
   const seen=new Set();let url=raw;
   for(let hop=0;hop<=2;hop++){
     url=allowedUrl(url,hosts,{image:kind==='image'});if(!url)reject('IMAGE_HOST_REJECTED');if(seen.has(url))reject('IMAGE_REDIRECT_REJECTED');seen.add(url);
@@ -20,6 +32,7 @@ async function retrieve(raw,hosts,kind,signal,fetchImpl){
     if(!r.ok){void r.body?.cancel().catch(()=>{});reject('IMAGE_FETCH_FAILED');}
     const mime=(r.headers.get('Content-Type')||'').split(';')[0].trim().toLowerCase();
     if(kind==='html'?mime!=='text/html':!['image/jpeg','image/png','image/gif','image/webp'].includes(mime)){void r.body?.cancel().catch(()=>{});reject('IMAGE_TYPE_REJECTED');}
+    if(attachment)return {url,mime,...await boundedImage(r,mime,signal)};
     const bytes=await boundedBytes(r,kind==='html'?262144:2097152,signal);return {url,mime,bytes};
   }reject('IMAGE_REDIRECT_REJECTED');
 }
@@ -36,6 +49,15 @@ export async function parseImageMeta(bytes,{Rewriter=globalThis.HTMLRewriter,sig
 export async function fetchThumbnail(officialUrl,imageUrl,{fetchImpl=fetch,timeoutMs=5000}={}){
  const policy=officialPolicy(officialUrl);if(!policy)reject('IMAGE_HOST_REJECTED');
  return timed(async signal=>{const result=await retrieve(imageUrl,policy.imageHosts,'image',signal,fetchImpl);if(!imageMagic(result.bytes,result.mime))reject('IMAGE_TYPE_REJECTED');return result;},timeoutMs);
+}
+// Posting-only representation; preview responses keep the existing bytes API.
+export async function fetchAttachment(officialUrl,imageUrl,{fetchImpl=fetch,timeoutMs=5000}={}){
+ const policy=officialPolicy(officialUrl);if(!policy)reject('IMAGE_HOST_REJECTED');
+ return timed(async signal=>{
+  const result=await retrieve(imageUrl,policy.imageHosts,'image',signal,fetchImpl,true);
+  if(!imageMagic(result.bytes,result.mime))reject('IMAGE_TYPE_REJECTED');
+  return {url:result.url,mime:result.mime,blob:result.blob};
+ },timeoutMs);
 }
 export async function findOfficialImage(officialUrl,{fetchImpl=fetch,timeoutMs=5000,Rewriter}={}){
  const none=reasonCode=>({imageUrl:null,source:null,reasonCode});const policy=officialPolicy(officialUrl);if(!policy)return none(officialUrl?'IMAGE_HOST_REJECTED':'NO_OFFICIAL_URL');

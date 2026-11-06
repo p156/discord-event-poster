@@ -1,7 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {officialPolicy,allowedUrl} from '../src/official-image-policy.mjs';
-import {findOfficialImage,fetchThumbnail,boundedBytes,imageMagic} from '../src/official-image-fetch.mjs';
+import {findOfficialImage,fetchThumbnail,fetchAttachment,boundedBytes,imageMagic} from '../src/official-image-fetch.mjs';
+import {forumUpload,sendFixedForum} from '../src/discord-client.mjs';
 import {createImagePreviewHandler,imageCall} from '../src/image-preview-handler.mjs';
 import {createPreviewClaims,signPreview,verifyPreview} from '../src/image-preview-ticket.mjs';
 import {fixture,payload} from './post-fixtures.mjs';
@@ -16,6 +17,31 @@ class MetadataRewriter{on(selector,handler){assert.equal(selector,'head meta');t
 const previewRequest=(h,p=v2(),headers={})=>h.request('/api/forum/image-preview','POST',p,undefined,h.token,headers);
 async function setup(options={}){let h;h=await fixture({...options,imageFetchImpl:async(url,opts)=>{h.attachmentGets=(h.attachmentGets||0)+1;assert.deepEqual(Object.keys(opts.headers),['Accept']);return options.imageFetchImpl?options.imageFetchImpl(url,opts):new Response(png,{headers:{'Content-Type':'image/png'}});}});h.external=[];h.previewHandler=createImagePreviewHandler({Rewriter:MetadataRewriter,fetchImpl:async(url,opts)=>{h.external.push({url,opts});return url===official?new Response('<head></head>',{headers:{'Content-Type':'text/html'}}):new Response(png,{headers:{'Content-Type':'image/png'}});}});h.preview=async p=>{const {imageUrl,...raw}=p||v2();const r=await h.previewHandler(previewRequest(h,raw),h.env);return {response:r,...await r.json()};};h.env.FORUM_POSTS_ENABLED='true';return h;}
 function intent(preview,p=v2()){return {...p,imageUrl:preview.imageUrl,previewTicket:preview.previewTicket};}
+
+test('attachment prefix across one-byte chunks preserves every supported image and rejects truncated signatures',async()=>{
+ const samples=[['image/png',png],['image/jpeg',new Uint8Array([255,216,255,0])],['image/gif',new Uint8Array([...new TextEncoder().encode('GIF89a'),...Array(7).fill(0)])],['image/webp',new Uint8Array([...new TextEncoder().encode('RIFF0000WEBP'),0,0,0,0])]];
+ for(const [mime,bytes]of samples){
+  const fetchImpl=async()=>{let i=0;return new Response(new ReadableStream({pull(c){if(i===bytes.length)c.close();else{c.enqueue(bytes.slice(i,i+1));i++;}}}),{headers:{'Content-Type':mime}});};
+  const result=await fetchAttachment(official,image,{fetchImpl});assert.equal(result.mime,mime);assert.equal(result.bytes,undefined);assert.deepEqual(new Uint8Array(await result.blob.arrayBuffer()),bytes);
+  await assert.rejects(()=>fetchAttachment(official,image,{fetchImpl:async()=>new Response(bytes.slice(0,3),{headers:{'Content-Type':mime}})}),/IMAGE_TYPE_REJECTED/);
+ }
+});
+test('attachment size cap cancels an oversize stream before a multipart body is built',async()=>{
+ let cancelled=false;await assert.rejects(()=>fetchAttachment(official,image,{fetchImpl:async()=>new Response(new ReadableStream({start(c){c.enqueue(new Uint8Array(2097153));},cancel(){cancelled=true;}}),{headers:{'Content-Type':'image/png'}})}),/IMAGE_TOO_LARGE/);assert.ok(cancelled);
+});
+test('multipart Blob snapshots input bytes and preserves Unicode JSON without embeds or flags',async()=>{
+ const bytes=png.slice(),body={name:'日本語📍',message:{content:'行1\r\nhttps://example.invalid/?a="b"',allowed_mentions:{parse:[],replied_user:false}},applied_tags:[]};
+ const upload=await forumUpload(body,{mime:'image/png',bytes});assert.ok(upload.body instanceof Blob);bytes.fill(0);
+ const form=await new Response(upload.body,{headers:{'Content-Type':upload.contentType}}).formData();assert.deepEqual(new Uint8Array(await form.get('files[0]').arrayBuffer()),png);assert.deepEqual(JSON.parse(form.get('payload_json')),{...body,message:{...body.message,attachments:[{id:0,filename:'official-image.png'}]}});
+});
+test('one-use upload reference is released on success, rejection and network failure',async()=>{
+ const env={DISCORD_BOT_TOKEN:'TEST_ONLY',DISCORD_FORUM_CHANNEL_ID:'123'},body={name:'TEST_ONLY',message:{content:'TEST_ONLY'},applied_tags:[]};
+ for(const mode of ['success',400,413,'network']){
+  const upload=await forumUpload(body,{mime:'image/png',bytes:png});let called=0;
+  const task=sendFixedForum(env,body,{upload,fetchImpl:async(url,opts)=>{called++;assert.ok(opts.body instanceof Blob);if(mode==='network')throw Error('NETWORK');return new Response('{}',{status:mode==='success'?200:mode});}});
+  if(mode==='success')await task;else await assert.rejects(()=>task);assert.equal(upload.body,null);assert.equal(called,1);
+ }
+});
 
 async function decodeWrite(call){
  const {opts}=call;
@@ -63,9 +89,9 @@ test('ambiguous multipart results never trigger text fallback or resend, includi
  }
 });
 test('local multipart construction failure sends text once without a partial Discord request',async()=>{
- const h=await setup(),p=await h.preview(),i=await h.issue(intent(p)),original=globalThis.FormData;
- try{globalThis.FormData=class {constructor(){throw Error('LOCAL_FORM_FAILURE');}};assert.equal((await h.submit(i,{...v2(),imageUrl:p.imageUrl})).status,201);}
- finally{globalThis.FormData=original;}
+ const h=await setup(),p=await h.preview(),i=await h.issue(intent(p)),original=globalThis.Blob;let constructions=0;
+ try{globalThis.Blob=class extends original {constructor(...args){if(++constructions===2)throw Error('LOCAL_FORM_FAILURE');super(...args);}};assert.equal((await h.submit(i,{...v2(),imageUrl:p.imageUrl})).status,201);assert.equal(constructions,2);}
+ finally{globalThis.Blob=original;}
  assert.equal(h.writes,1);assert.equal((await decodeWrite(h.calls.find(c=>c.opts.method==='POST'))).file,null);
 });
 test('exact HTTPS public host policy rejects all SSRF spellings before any fetch',async()=>{

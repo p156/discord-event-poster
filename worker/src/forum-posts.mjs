@@ -1,4 +1,4 @@
-import {fetchThumbnail} from './official-image-fetch.mjs';
+import {fetchAttachment} from './official-image-fetch.mjs';
 // INTERNAL ONLY. Not imported by the public Worker entrypoint.
 // Step 3 must commit durable sending/quota BEFORE calling sendPreparedForumPost.
 import { PostInputError,validatePostPayload,isSnowflake } from './forum-input.mjs';
@@ -42,7 +42,7 @@ export async function sendPreparedForumPost(context){
     // policy. Never forward Discord authorization to the image host.
     let upload;
     if(payload.apiVersion===2&&payload.imageUrl){
-      try{upload=await forumUpload(body,await fetchThumbnail(payload.officialUrl,payload.imageUrl,{fetchImpl:imageFetchImpl}));}
+      try{upload=await forumUpload(body,await fetchAttachment(payload.officialUrl,payload.imageUrl,{fetchImpl:imageFetchImpl}));}
       catch{/* Optional image failed before Discord write: continue with text. */}
     }
     // No embeds or flags, regardless of image availability: keep URL unfurling.
