@@ -69,3 +69,10 @@ test('unknown exception text and code are never displayed as login diagnostics',
  const h=harness();h.ctx.window.open=()=>{throw {code:'PRIVATE_TOKEN',message:'PRIVATE_SECRET'};};await h.login();
  assert.match(h.el('auth-status').textContent,/complete\/LOGIN_UNKNOWN/);assert.ok(!h.el('auth-status').textContent.includes('PRIVATE_'));
 });
+
+test('regionless event reaches the posting transport with title-only thread and no region line',async()=>{
+ const h=harness();h.el('source').value='『地域なし試験』説明\n公式URL：i-ku-kan.com/department。';h.el('parse').onclick();
+ await h.login();await h.post();
+ const call=h.calls.find(c=>c.url.endsWith('/posts'));assert.ok(call);
+ const p=JSON.parse(call.opts.body);assert.equal(p.threadName,'地域なし試験');assert.ok(!p.content.includes('開催地域'));assert.match(p.content,/https:\/\/i-ku-kan.com\/department/);assert.match(h.el('post-results').innerHTML,/成功/);
+});
