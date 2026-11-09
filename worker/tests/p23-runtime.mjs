@@ -11,7 +11,7 @@ const script=(await build({entryPoints:[fileURLToPath(new URL('./p23-runtime-ent
 const options=()=>convertV4MiniflareOptions({modules:true,script,compatibilityDate:'2026-04-01',resourcePersistencePath:directory,durableObjects:{AUTH_STATE:{className:'AuthState',useSQLite:true}},bindings:{...oauthBindings(origin),FORUM_POSTS_ENABLED:'true',DISCORD_BOT_TOKEN:'PRIVATE_TEST_BOT',DISCORD_FORUM_CHANNEL_ID:'123',SESSION_SIGNING_KEY:'a'.repeat(64)}});
 let mf,session;
 const dispatch=(url,opts)=>mf.dispatchFetch(url,{...opts,redirect:'manual'});
-const call=async(route,body,key)=>{const r=await dispatch(BASE+route,{method:body===undefined?'GET':'POST',headers:{Origin:origin,Authorization:'Bearer '+session.token,'Content-Type':'application/json',...(key?{'Idempotency-Key':key}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});return {status:r.status,data:await r.json()};};
+const call=async(route,body,key)=>{if(route==='/api/forums/select'&&body?.expectedRevision===undefined){const registry=(await call('/api/forums')).data;body={...body,expectedRevision:registry.revision,expectedGeneration:registry.forums.find(f=>f.id===body.forumId)?.generation};}const r=await dispatch(BASE+route,{method:body===undefined?'GET':'POST',headers:{Origin:origin,Authorization:'Bearer '+session.token,'Content-Type':'application/json',...(key?{'Idempotency-Key':key}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});return {status:r.status,data:await r.json()};};
 try{
  mf=new Miniflare(options());session=await mockLogin(dispatch,origin);
  assert.equal((await call('/api/forums')).data.selected,'123');
@@ -33,6 +33,21 @@ try{
  assert.equal((await call('/api/forums/124/posts',p,i.data.idempotencyKey)).status,409);
  const sent=await call('/api/forums/123/posts',p,i.data.idempotencyKey);assert.equal(sent.data.status,'succeeded');
  assert.equal((await call('/api/forums/123/posts',p,i.data.idempotencyKey)).data.status,'succeeded');
+ // Reproduce a missing body followed by 429 in one batch, persist, and resume.
+ await dispatch(BASE+'/__test/history-gap',{method:'POST'});
+ let partial;for(let step=0;step<15;step++){partial=await call('/api/forums/123/history/sync',{});if(partial.data.sync.status==='partial')break;}
+ assert.equal(partial.data.sync.error,'DISCORD_RATE_LIMITED');
+ await mf.dispose();mf=new Miniflare(options());session=await mockLogin(dispatch,origin);
+ await dispatch(BASE+'/__test/history-gap-recover',{method:'POST'});
+ await new Promise(resolve=>setTimeout(resolve,1400));
+ let resumed;for(let step=0;step<20;step++){resumed=await call('/api/forums/123/history/sync',{});if(!resumed.data.sync.more)break;}
+ assert.equal(resumed.data.sync.complete,false);assert.equal(resumed.data.sync.status,'partial');
+ assert.equal((await call('/api/forums/123/history/compare',{titles:['取得不能の履歴']})).data.unverified,true);
+ assert.equal((await call('/api/forums/123/history/read',{})).data.items.find(r=>r.threadId==='91001').status,'ok');
+ const snapshot=(await call('/api/forums')).data;
+ await call('/api/forums/select',{forumId:'124'});
+ const stale=await call('/api/forums/select',{forumId:'123',expectedRevision:snapshot.revision,expectedGeneration:snapshot.forums.find(f=>f.id==='123').generation});
+ assert.equal(stale.status,409);assert.equal((await call('/api/forums')).data.selected,'124');
  await call('/api/forums/remove',{forumId:'123'});
  assert.equal((await call('/api/forums/123/posts/'+i.data.operationId,undefined,i.data.idempotencyKey)).data.status,'succeeded');
  await call('/api/forums/remove',{forumId:'124'});

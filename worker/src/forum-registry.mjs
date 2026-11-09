@@ -33,7 +33,11 @@ export async function forumState(storage,env,input){
     const f=r.forums.find(f=>f.id===input.forumId);if(f){f.active=false;f.generation++;}
     if(r.selected===input.forumId)r.selected='';
   }else if(input.action==='forum.select'){
-    await registeredTarget(storage,env,input.forumId);r.selected=input.forumId;
+    if(!Number.isSafeInteger(input.expectedRevision)||input.expectedRevision<1||!Number.isSafeInteger(input.expectedGeneration)||input.expectedGeneration<1)throw new OperationError('INVALID_REQUEST');
+    const target=await registeredTarget(storage,env,input.forumId);
+    if(target.generation!==input.expectedGeneration)throw new OperationError('TARGET_CHANGED',409);
+    if(r.revision!==input.expectedRevision)throw new OperationError('SELECTION_CONFLICT',409);
+    r.selected=input.forumId;
   }else throw new OperationError('INVALID_REQUEST');
   r.revision++;await storage.put(key,r);await storage.sync();
   return {forums:r.forums.filter(f=>f.active),selected:r.selected,revision:r.revision,legacyForumId:env.DISCORD_FORUM_CHANNEL_ID};

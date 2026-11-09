@@ -19,18 +19,19 @@ export async function historyState(storage,env,input,now=Date.now()){
   }
   if(input.action==='history.compare'){
     if(!Array.isArray(input.titles)||input.titles.length>100||input.titles.some(t=>typeof t!=='string'||t.length>100))throw new OperationError('INVALID_REQUEST');
-    const matches=input.titles.map(()=>[]);let cursor,scanned=0,limited=false;
+    const matches=input.titles.map(()=>[]);let cursor,scanned=0,limited=false,incomplete=false;
     while(true){
       const entries=await storage.list({prefix:root(id)+'row:',limit:100,...(cursor?{startAfter:cursor}:{})});
       for(const [k,row]of entries){
         cursor=k;scanned++;
         if(row.status==='deleted'||row.status==='foreign')continue;
+        if(row.status!=='ok')incomplete=true;
         input.titles.forEach((title,i)=>{const match=titleMatch(title,row.title);if(match){matches[i].push({...match,title:row.title,url:row.url,threadId:row.threadId,status:row.status});matches[i].sort((a,b)=>b.score-a.score);matches[i].splice(20);}});
       }
       if(entries.size<100)break;
       if(scanned>=10000){limited=true;break;}
     }
-    return {forumId:id,matches,unverified:limited||!run||run.stage!=='done'||run.gaps||run.status!=='complete',checkedAt:run?.finishedAt||null,limited};
+    return {forumId:id,matches,unverified:incomplete||limited||!run||run.stage!=='done'||run.gaps||run.status!=='complete',checkedAt:run?.finishedAt||null,limited};
   }
   if(input.action==='history.acquire'){
     if(run?.leaseUntil>now)return {busy:true,sync:publicRun(run)};
@@ -55,11 +56,20 @@ export async function historyState(storage,env,input,now=Date.now()){
     if(row.status==='pending')await storage.put(pendingKey(id,row.threadId),{...row,generation:run.generation});
     else await storage.delete(pendingKey(id,row.threadId));
   }
+  // Partial rows are committed even when the next Discord read fails.
+  run.gaps=run.gaps||Boolean(input.gaps);
   if(input.error){run.status='partial';run.error=input.error;run.retryAfterSeconds=input.retryAfterSeconds||0;}
   else{
     Object.assign(run,input.progress||{});delete run.error;delete run.retryAfterSeconds;
-    run.gaps=run.gaps||Boolean(input.gaps);
     if(run.stage==='done'){
+      // Defensive check for records created by an older version or interrupted
+      // writes: a completed cursor alone does not prove complete row coverage.
+      let cursor;
+      while(true){
+        const entries=await storage.list({prefix:root(id)+'row:',limit:100,...(cursor?{startAfter:cursor}:{})});
+        for(const [k,row]of entries){cursor=k;if(!['ok','deleted','foreign'].includes(row.status))run.gaps=true;}
+        if(entries.size<100)break;
+      }
       run.finishedAt=now;run.status=run.gaps?'partial':'complete';
     }
   }

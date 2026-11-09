@@ -53,3 +53,13 @@ test('optional region preserves titles, body quotations and regional headings',(
  for(const quote of ['『題』','「題」','“題”','"題"'])assert.equal(E.runAnalysis(quote+'説明').events[0].title,'題');
  assert.equal(E.runAnalysis('説明中の『引用』のみ').events.length,0);
 });
+
+test('regional headings separated by LF/CRLF keep the main parser region and preserve P1',()=>{
+ for(const gap of ['',' ','\n','\r\n','\n  ']){
+  const e=E.runAnalysis('【東京】'+gap+'『試験公演』\nイベント本文').events[0];
+  assert.equal(e.region,'東京');assert.equal(e.title,'試験公演');assert.equal(e.description,'イベント本文');assert.match(E.contentFor(e),/開催地域：東京/);
+ }
+ const events=E.runAnalysis('【東京】\n『試験公演』\n本文中の『引用』と【大阪】「紹介」\n> 『引用行』\n『地域なし公演』\n本文').events;
+ assert.equal(events.length,2);assert.equal(events[1].region,'');assert.equal(events[1].title,'地域なし公演');assert.match(events[0].description,/> 『引用行』/);
+ assert.equal(E.validateEvent(events[1]).length,0);
+});

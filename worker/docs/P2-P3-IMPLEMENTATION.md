@@ -30,7 +30,7 @@ owner_idと最初のメッセージのauthor.idで対象を確認し、他人の
 | --- | --- |
 | GET /api/forums | 登録一覧と最後の選択を取得 |
 | POST /api/forums/register | forumIdを再検証して登録 |
-| POST /api/forums/select | 登録済みforumIdを再検証して選択 |
+| POST /api/forums/select | forumId、expectedRevision、expectedGenerationを検証して選択 |
 | POST /api/forums/remove | 登録解除。Discord DELETEは呼ばない |
 | POST /api/discord/guilds | Bot参加サーバーをafterでページ取得 |
 | POST /api/discord/forums | 指定guildIdの利用可能なフォーラムを取得 |
@@ -120,16 +120,43 @@ Discordの読み取りレスポンスは1MiBを上限とし、上限超過では
 
 ## 検証
 
-- npm test：207件成功、失敗0。従来のparserチェックも成功。
-- 拡張テスト：284件中270件成功、14件失敗。
+- npm test：218件成功、失敗0。従来のparserチェックも成功。
+- 拡張テスト：295件中281件成功、14件失敗。
 - 拡張テストの失敗名14件はP1時点のログと照合し、完全一致を確認。
 - 既存のブラウザ22ケース、旧画面14ケース、旧Phase 2ブラウザ、認証runtime、投稿runtime、移行runtime、画像runtime、画像ブラウザが成功。
-- 新規ブラウザ4ケースと、SQLite再起動と再ログインを含むP2/P3 runtimeが成功。
+- 新規ブラウザ7ケースと、SQLite再起動と再ログインを含むP2/P3 runtimeが成功。
 - すべてのDiscord投稿はモックであり、実投稿は行っていない。
 
 既存14失敗はowner-readonly-evidence、staging-artifacts、wrangler-stage1-deploy、wrangler-strict-candidateに属する。
 固定されたローカル作業場所や成果物、未同梱のworker/work/wrangler-strict-validation/wrangler.jsonc等への依存は変更していない。
 全テスト成功とは扱わない。
+
+## マージ前レビュー4件への対応
+
+修正基準は27703439f67e82f11239eb0576eba45334b1bc83である。
+マージ可否は修正後の再レビューで判断する。
+
+1. 旧操作のforumGenerationが欠落または0の場合は初期登録世代1に対応付ける。
+   初期登録中は旧操作を維持し、解除して再登録した世代への流用はreserveとbeginで拒否する。
+   送信済みと結果不明の操作の照会を維持し、結果不明を自動再送しない。
+2. 履歴処理の欠落フラグは成功経路と失敗経路の両方で保存する。
+   完了時にも保存行を確認し、pending、body_deleted、unavailableが残る場合は部分取得とする。
+   旧バージョン等の不整合な完了記録でも、比較時に保存行から重複未確認と判定する。
+3. 選択APIは期待するregistry revisionと対象の登録世代を必須にする。
+   DO内の直列化区間で照合し、古いrevisionはSELECTION_CONFLICT、別の登録世代はTARGET_CHANGEDで拒否する。
+   画面は最新の選択要求だけを処理し、無関係な登録更新との競合では登録世代が変わっていない場合に限り最大3回試す。
+   解除や再登録があればその要求を再試行せず、保存された選択を再取得する。
+4. 地域とタイトルの間にLFまたはCRLFがあっても地域を保持する。
+   行頭制約と地域なしの解析を維持し、本文途中の引用と引用記号に続く行を新イベントにしない。
+
+通常テストには回帰11件を追加した。
+欠落／0の旧操作、初期登録時の互換性、解除後の拒否、過去結果の照会、本文取得不能と429の同時発生、DO再起動、欠落行と完了状態の整合性、選択revisionと登録世代の競合、改行付き地域を検証する。
+ブラウザには逆順の選択要求、別操作による解除と再登録、無関係な登録更新後の再試行の3ケースを追加した。
+SQLite runtimeでも429前の欠落状態を保存して再起動し、再開後に部分取得と重複未確認を保つことを確認した。
+
+画像ブラウザは一括実行中にローカル接続のECONNRESETで終了したため、単独で再実行し全ケース成功した。
+この接続切断をコード上の画像回帰と断定していない。
+認証、画像処理、Cloudflare設定、Bot権限設定をこの修正で変更していない。
 
 ## 変更ファイル
 

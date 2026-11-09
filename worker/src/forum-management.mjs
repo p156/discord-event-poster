@@ -52,14 +52,15 @@ export async function handleManagement(request,env){
     return json({forums});
   }
   if(['/api/forums/register','/api/forums/remove','/api/forums/select'].includes(path)&&request.method==='POST'){
-    const b=await body(['forumId']);if(!isSnowflake(b.forumId))throw new OperationError('INVALID_REQUEST');
+    const selecting=path==='/api/forums/select';
+    const b=await body(selecting?['forumId','expectedRevision','expectedGeneration']:['forumId']);if(!isSnowflake(b.forumId))throw new OperationError('INVALID_REQUEST');
     const action='forum.'+path.split('/').at(-1);
     let extra={};
     if(action!=='forum.remove'){
       const {channel}=await verifyForumAccess(env,b.forumId,options);
       extra={guildId:channel.guild_id,name:channel.name};
     }
-    return json(await managementCall(env,token,{action,forumId:b.forumId,...extra}));
+    return json(await managementCall(env,token,{action,forumId:b.forumId,...extra,...(selecting?{expectedRevision:b.expectedRevision,expectedGeneration:b.expectedGeneration}:{})}));
   }
   const match=path.match(/^\/api\/forums\/([1-9]\d{0,19})\/(tags|history\/(?:read|sync|compare)|post-intents|posts(?:\/[a-f0-9-]+)?|image-preview|image-thumbnail)$/);
   if(!match)throw new OperationError('ROUTE_NOT_FOUND',404);

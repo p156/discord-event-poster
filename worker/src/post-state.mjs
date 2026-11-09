@@ -57,7 +57,9 @@ export async function postState(storage,env,input,now=Date.now()){
     }
     if(['post.reserve','post.begin'].includes(input.action)){
       const target=await registeredTarget(tx,env,c.forumId);
-      if(r.forumGeneration&&r.forumGeneration!==target.generation)throw new OperationError('TARGET_CHANGED',409);
+      // Pre-registry records (missing/zero) belong to the initial registration,
+      // never to whichever generation happens to be active when replayed.
+      if((r.forumGeneration||1)!==(target.generation||1))throw new OperationError('TARGET_CHANGED',409);
     }
     if(input.action==='post.reserve'){
       if(!['not_started','retryable'].includes(r.status)||r.safeToRetry===false)return {record:view(r,now)};

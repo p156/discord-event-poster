@@ -11,7 +11,7 @@
 
   function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
   // Regionless headings must begin a line; inline quotations remain description.
-  const EVENT_HEADING = /(?:【([^】\n]{1,40})】[ \t]*)?[『「“"]([^』」”"\r\n]+)[』」”"]/;
+  const EVENT_HEADING = /(?:【([^】\n]{1,40})】\s*)?[『「“"]([^』」”"\r\n]+)[』」”"]/;
   function splitEvents(text) { const re = new RegExp('^[ \t]*' + EVENT_HEADING.source, 'gm'); const starts = []; let m; while ((m = re.exec(text))) starts.push({ index:m.index, region:(m[1]||"").trim(), title:m[2].trim(), end:re.lastIndex }); if (!starts.length) return { events:[], warnings:["イベント開始形式（行頭の『タイトル』、【地域】は任意）を認識できませんでした。"] }; const events = starts.map((s, i) => ({ raw:text.slice(s.index, i + 1 < starts.length ? starts[i + 1].index : text.length).trim(), region:s.region, title:s.title })); const prefix = text.slice(0, starts[0].index).trim(); return { events, warnings:prefix ? [`先頭にイベントとして認識できない文章があります（${prefix.length}文字）。`] : [] }; }
   function extractLinks(raw) {
     const links=[],normalize=window.PosterClient.normalizeOfficialUrl;
@@ -184,14 +184,30 @@
     forumConfig=data;disposeImages();renderCards();$(state.managed?'forum-status':'auth-status').textContent='タグを取得しました。';
   }
   async function activateForum(id,save=true,fromLogin=false){
-    if(state.posting&&!fromLogin)return;clearForum();state.forumId=id;const generation=state.forumGeneration;renderRegistry();
+    if(state.posting&&!fromLogin)return;const expectedGeneration=state.registry?.forums.find(f=>f.id===id)?.generation;clearForum();state.forumId=id;const generation=state.forumGeneration;renderRegistry();
     if(!id)return;
     try{
-      if(save)await client.management('/api/forums/select',{forumId:id});
+      if(save){
+        for(let attempt=0;attempt<3;attempt++){
+          if(generation!==state.forumGeneration)return;
+          try{
+            const selected=await client.management('/api/forums/select',{forumId:id,expectedRevision:state.registry?.revision,expectedGeneration});
+            if(generation!==state.forumGeneration)return;
+            state.registry=selected;break;
+          }catch(error){
+            if(generation!==state.forumGeneration)return;
+            if(error.code!=='SELECTION_CONFLICT'||attempt===2)throw error;
+            const latest=await client.management('/api/forums');
+            if(generation!==state.forumGeneration)return;
+            state.registry=latest;
+            if(latest.forums.find(f=>f.id===id)?.generation!==expectedGeneration)throw new Error('TARGET_CHANGED');
+          }
+        }
+      }
       if(generation!==state.forumGeneration)return;
       await loadTags();if(generation!==state.forumGeneration)return;state.forumReady=true;
       $('forum-status').textContent='投稿先を選択しました。';await readHistory();void refreshHistory();
-    }catch{if(generation===state.forumGeneration)$('forum-status').textContent='投稿先またはタグを確認できません。再選択してください。';}
+    }catch{if(generation===state.forumGeneration){if(save)await loadRegistry();else {state.forumReady=false;renderRegistry();}$('forum-status').textContent='投稿先の登録または権限が変更されました。選択を確認してください。';}}
   }
   function renderHistory(){
     if(!$('history-list'))return;

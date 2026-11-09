@@ -1,3 +1,4 @@
+import {historyState} from '../src/forum-history.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import worker,{AuthState} from '../src/index.mjs';
@@ -15,6 +16,7 @@ async function harness(){
   let object=new AuthState({storage},env);env.AUTH_STATE={idFromName:()=>0,get:()=>({fetch:r=>object.fetch(r)})};
   let token=(await issueSession(storage,env)).token;
   const call=async(path,body,key,method=body===undefined?'GET':'POST')=>{
+    if(path==='/api/forums/select'&&body?.expectedRevision===undefined){const r=(await call('/api/forums')).body;body={...body,expectedRevision:r.revision,expectedGeneration:r.forums.find(f=>f.id===body.forumId)?.generation};}
     const real=globalThis.fetch;globalThis.fetch=mock.fetch;
     try{
       const response=await worker.fetch(new Request('https://discord-event-poster-api.monma5435.workers.dev'+path,{method,headers:{Origin:origin,Authorization:'Bearer '+token,'Content-Type':'application/json',...(key?{'Idempotency-Key':key}:{})},...(body!==undefined?{body:JSON.stringify(body)}:{})}),env);
@@ -182,4 +184,76 @@ test('new routes enforce authentication/origin and never accept a browser-provid
  const h=await harness();assert.equal((await h.call('/api/discord/channels/123')).status,404);
  assert.equal((await h.call('/api/discord/forums',{guildId:'456',apiPath:'users/@me'})).status,400);
  assert.equal((await h.call('/api/forums/999/post-intents',h.payload)).status,409);
+});
+
+for(const generation of [undefined,0]){
+ test('legacy generation '+String(generation)+' works in the initial registration but not after re-registration',async()=>{
+  for(const reRegister of [false,true]){
+   const h=await harness(),i=await h.call('/api/forum/post-intents',h.payload);
+   const key='posts:operation:'+i.body.operationId,record=await h.storage.get(key);
+   if(generation===undefined)delete record.forumGeneration;else record.forumGeneration=generation;
+   await h.storage.put(key,record);await h.call('/api/forums');
+   if(reRegister){await h.call('/api/forums/remove',{forumId:'123'});await h.call('/api/forums/register',{forumId:'123'});}
+   h.restart();await h.relogin();
+   const result=await h.call('/api/forum/posts',h.payload,i.body.idempotencyKey);
+   assert.equal(result.status,reRegister?409:201);assert.equal(h.mock.state.writes.length,reRegister?0:1);
+  }
+ });
+}
+for(const outcome of ['succeeded','unknown'])test('legacy '+outcome+' receipt stays inspectable and never dispatches again after re-registration',async()=>{
+ const h=await harness(),i=await h.call('/api/forum/post-intents',h.payload);
+ const key='posts:operation:'+i.body.operationId,record=await h.storage.get(key);delete record.forumGeneration;await h.storage.put(key,record);
+ if(outcome==='unknown')h.mock.state.mode='unknown';
+ assert.equal((await h.call('/api/forum/posts',h.payload,i.body.idempotencyKey)).body.status,outcome);
+ await h.call('/api/forums/remove',{forumId:'123'});await h.call('/api/forums/register',{forumId:'123'});h.restart();await h.relogin();
+ assert.equal((await h.call('/api/forums/123/posts/'+i.body.operationId,undefined,i.body.idempotencyKey)).body.status,outcome);
+ assert.equal((await h.call('/api/forum/posts',h.payload,i.body.idempotencyKey)).body.status,outcome);
+ assert.equal(h.mock.state.writes.length,1);
+});
+for(const failure of ['deleted','forbidden'])test('history preserves '+failure+' gap followed by 429 across restart and resume; posting stays available',async()=>{
+ const h=await harness();addThread(h.mock,90000,'本文を読めない催し',{body:false});addThread(h.mock,90001,'429後に再開する催し');
+ const fetch=h.mock.fetch;let limited=true;
+ h.mock.fetch=(url,opts)=>String(url).includes('channels/90001/messages')&&limited?Promise.resolve(Response.json({retry_after:1},{status:429})):failure==='forbidden'&&String(url).includes('channels/90000/messages')?Promise.resolve(Response.json({code:50013},{status:403})):fetch(url,opts);
+ assert.equal((await h.sync()).body.sync.error,'DISCORD_RATE_LIMITED');
+ assert.equal((await h.storage.get('history:v1:123:sync')).gaps,true);
+ limited=false;h.restart();await h.relogin();const real=Date.now;
+ try{Date.now=()=>real()+2000;
+  const result=await h.sync();assert.equal(result.body.sync.complete,false);assert.equal(result.body.sync.status,'partial');
+  assert.equal((await h.call('/api/forums/123/history/compare',{titles:['本文を読めない催し']})).body.unverified,true);
+  assert.equal((await h.post()).body.status,'succeeded');
+ }finally{Date.now=real;}
+});
+test('stored incomplete rows override an incorrectly complete old synchronization record',async()=>{
+ const h=await harness();addThread(h.mock,91000,'本文欠落',{body:false});await h.sync();
+ const run=await h.storage.get('history:v1:123:sync');run.gaps=false;run.status='complete';await h.storage.put('history:v1:123:sync',run);
+ assert.equal((await h.call('/api/forums/123/history/compare',{titles:['本文欠落']})).body.unverified,true);
+});
+test('older select revisions are rejected and the accepted destination survives restart/login',async()=>{
+ const h=await harness();await h.call('/api/forums/register',{forumId:'124'});const snapshot=(await h.call('/api/forums')).body;
+ const selection=id=>({forumId:id,expectedRevision:snapshot.revision,expectedGeneration:snapshot.forums.find(f=>f.id===id).generation});
+ assert.equal((await h.call('/api/forums/select',selection('124'))).status,200);
+ const stale=await h.call('/api/forums/select',selection('123'));assert.equal(stale.status,409);assert.equal(stale.body.error.code,'SELECTION_CONFLICT');
+ h.restart();await h.relogin();assert.equal((await h.call('/api/forums')).body.selected,'124');
+ assert.equal((await h.call('/api/forums/select',{forumId:'123',expectedGeneration:1,expectedRevision:0})).status,400);
+});
+test('selection cannot resurrect a removed/re-registered target or overwrite another registry update',async()=>{
+ const h=await harness();const snapshot=(await h.call('/api/forums')).body;
+ const old={forumId:'123',expectedRevision:snapshot.revision,expectedGeneration:snapshot.forums[0].generation};
+ await h.call('/api/forums/remove',{forumId:'123'});assert.equal((await h.call('/api/forums/select',old)).status,409);
+ await h.call('/api/forums/register',{forumId:'123'});assert.equal((await h.call('/api/forums/select',old)).body.error.code,'TARGET_CHANGED');
+ const current=(await h.call('/api/forums')).body;
+ await h.call('/api/forums/register',{forumId:'125'});
+ assert.equal((await h.call('/api/forums/select',{forumId:'123',expectedRevision:current.revision,expectedGeneration:current.forums.find(f=>f.id==='123').generation})).body.error.code,'SELECTION_CONFLICT');
+ assert.equal((await h.call('/api/forums')).body.selected,'');
+});
+
+test('finishing a cursor cannot mark stored pending/unavailable rows complete even without a gap flag',async()=>{
+ for(const status of ['pending','unavailable']){
+  const h=await harness();await h.call('/api/forums');const now=Date.now();
+  await h.storage.put('history:v1:123:sync',{stage:'verify',generation:'test-generation',status:'running',gaps:false,lease:'test-lease',leaseUntil:now+10000});
+  await h.storage.put('history:v1:123:row:92000',{threadId:'92000',title:'未取得の履歴',status,generation:'test-generation'});
+  const result=await historyState(h.storage,h.env,{action:'history.commit',forumId:'123',lease:'test-lease',progress:{stage:'done'}},now);
+  assert.equal(result.sync.complete,false);assert.equal(result.sync.status,'partial');h.restart();
+  assert.equal((await h.call('/api/forums/123/history/compare',{titles:['未取得の履歴']})).body.unverified,true);
+ }
 });
