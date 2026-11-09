@@ -1,7 +1,7 @@
 import {OperationError} from './post-keys.mjs';
 const key='discord:cooldowns';
 export function validateScope(scope){
-  if(!scope||!['GET channel','GET channel/webhooks','POST channel/threads','GET users/@me','GET guild/roles','GET guild/member'].includes(scope.route)||!(/^(?:channel|guild):[1-9]\d{0,19}$/.test(scope.major)||scope.major==='none'))throw new OperationError('INVALID_REQUEST');
+  if(!scope||!['GET channel','GET channel/webhooks','POST channel/threads','GET users/@me','GET guild/roles','GET guild/member','GET user/guilds','GET guild/channels','GET guild/active','GET channel/archive','GET channel/starter','GET channel/permissions'].includes(scope.route)||!(/^(?:channel|guild):[1-9]\d{0,19}$/.test(scope.major)||scope.major==='none'))throw new OperationError('INVALID_REQUEST');
   return scope.route+'|'+scope.major;
 }
 export async function cooldownWait(storage,scope,now=Date.now()){
@@ -23,7 +23,8 @@ export async function cooldownState(storage,input,now=Date.now()){
     for(const name of ['routes','buckets'])for(const [k,v]of Object.entries(state[name]))if(v<=t)delete state[name][k];
     const bucket=typeof input.bucket==='string'&&/^[a-zA-Z0-9_-]{1,128}$/.test(input.bucket)?input.bucket:null;
     if(bucket)state.routeBuckets[route]=bucket;
-    if(Object.keys(state.routeBuckets).length>64)throw new OperationError('STATE_UNAVAILABLE',503);
+    // Bound learned route metadata without blocking new forums or history reads.
+    for(const old of Object.keys(state.routeBuckets).slice(0,-2048))delete state.routeBuckets[old];
     if(input.retry){
       const seconds=input.retry.retryAfterSeconds;
       if(typeof seconds!=='number'||!Number.isFinite(seconds)||seconds<=0||seconds>Number.MAX_SAFE_INTEGER/1000)throw new OperationError('INVALID_REQUEST');

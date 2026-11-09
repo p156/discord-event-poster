@@ -1,3 +1,6 @@
+import {forumState} from './forum-registry.mjs';
+import {historyState} from './forum-history.mjs';
+import {handleManagement,managementError} from './forum-management.mjs';
 import {imageState,cleanupImages} from './image-preview-state.mjs';
 import {createImagePreviewHandler} from './image-preview-handler.mjs';
 import {authenticatedSession,migrateAuthentication,SESSION_KEY,sessionConfigured} from './auth-session.mjs';
@@ -29,13 +32,13 @@ export class AuthState {
       try{return json(await oauthState(this.storage,this.env,body,now));}
       catch(error){return json({error:{code:error instanceof OperationError?error.code:'STATE_UNAVAILABLE'}},error instanceof OperationError?error.httpStatus:503);}
     }
-    if(!['check','logout'].includes(action)&&!(typeof action==='string'&&(action.startsWith('post.')||action.startsWith('discord.')||action.startsWith('image.'))))return json({error:{code:'AUTH_METHOD_REMOVED'}},404);
+    if(!['check','logout'].includes(action)&&!(typeof action==='string'&&(action.startsWith('post.')||action.startsWith('discord.')||action.startsWith('image.')||action.startsWith('forum.')||action.startsWith('history.'))))return json({error:{code:'AUTH_METHOD_REMOVED'}},404);
     const verified=await authenticatedSession(this.storage,this.env,token);
     if(!verified)return json({error:'ログインし直してください。'},401);
-    if(typeof action==='string'&&(action.startsWith('post.')||action.startsWith('discord.')||action.startsWith('image.'))){
+    if(typeof action==='string'&&(action.startsWith('post.')||action.startsWith('discord.')||action.startsWith('image.')||action.startsWith('forum.')||action.startsWith('history.'))){
       const {proof,...body}=packet;
       if(request.url!=='https://internal/auth'||request.method!=='POST'||!await verifyInternal(body,proof,this.env.SESSION_SIGNING_KEY))return json({error:{code:'INTERNAL_ACCESS_REJECTED'}},403);
-      try{return json(action.startsWith('post.')?await postState(this.storage,this.env,body,now):action.startsWith('image.')?await imageState(this.storage,this.env,body,now):await cooldownState(this.storage,body,now));}
+      try{return json(action.startsWith('forum.')?await forumState(this.storage,this.env,body):action.startsWith('history.')?await historyState(this.storage,this.env,body,now):action.startsWith('post.')?await postState(this.storage,this.env,body,now):action.startsWith('image.')?await imageState(this.storage,this.env,body,now):await cooldownState(this.storage,body,now));}
       catch(error){return json({error:{code:error instanceof OperationError?error.code:'STATE_UNAVAILABLE'}},error instanceof OperationError?error.httpStatus:503);}
     }
     if(action==='logout'){const sessions=await this.storage.get(SESSION_KEY)||[];await this.storage.put(SESSION_KEY,sessions.filter(s=>s.id!==verified.id));await this.storage.sync();}
@@ -69,11 +72,14 @@ export default {
     let response,stage='request';
     try {
       const url=new URL(request.url),path=url.pathname;
-      if(['/api/forum/image-preview','/api/forum/image-thumbnail'].includes(path))return createImagePreviewHandler()(request,env);
-      if(path==='/api/forum/posts'||path==='/api/forum/post-intents'||path.startsWith('/api/forum/posts/')){
+      if(path==='/api/forums'||path.startsWith('/api/forums/')||path.startsWith('/api/discord/')){
+        try{response=await handleManagement(request,env);}catch(error){response=managementError(error);}
+      }
+      else if(['/api/forum/image-preview','/api/forum/image-thumbnail'].includes(path))return createImagePreviewHandler()(request,env);
+      else if(path==='/api/forum/posts'||path==='/api/forum/post-intents'||path.startsWith('/api/forum/posts/')){
         const readOnly=env.FORUM_POSTS_ENABLED==='read-only'&&path.startsWith('/api/forum/posts/')&&UUID.test(path.slice('/api/forum/posts/'.length))&&(request.method==='GET'||request.method==='OPTIONS'&&request.headers.get('Access-Control-Request-Method')==='GET');
         if(env.FORUM_POSTS_ENABLED!=='true'&&!readOnly)response=json({error:'APIが見つかりません。'},404);
-        else return createPostHandler()(request,env);
+        else return createPostHandler()(request,{...env,CHECK_FORUM_ACCESS:true});
       }
       else if(url.search)response=json({error:'パラメーターは利用できません。'},400);
       else if(request.method==='OPTIONS') {
@@ -87,7 +93,7 @@ export default {
         const token=request.headers.get('Authorization')?.match(/^Bearer (oauth2\.[a-f0-9.]{1,160})$/)?.[1]||'';
         stage='auth_check';
         response=await auth(env,{action:path==='/api/logout'?'logout':'check',token});
-        if(response.ok&&path==='/api/session')response=json({authenticated:true,capabilities:{forumPosts:env.FORUM_POSTS_ENABLED==='true',forumPostStatus:['true','read-only'].includes(env.FORUM_POSTS_ENABLED),apiVersion:1,operationTicket:'v1',postPayloadVersions:[1,2],officialImagePreview:env.FORUM_POSTS_ENABLED==='true'}});
+        if(response.ok&&path==='/api/session')response=json({authenticated:true,capabilities:{forumPosts:env.FORUM_POSTS_ENABLED==='true',forumPostStatus:['true','read-only'].includes(env.FORUM_POSTS_ENABLED),apiVersion:1,multiForum:true,operationTicket:'v1',postPayloadVersions:[1,2],officialImagePreview:env.FORUM_POSTS_ENABLED==='true'}});
         if(response.ok&&path==='/api/forum/tags') {
           stage='discord_fetch';
           const discordResponse=await fetchLegacyForum(env,false,createDiscordFetch(env,token));

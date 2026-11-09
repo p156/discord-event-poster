@@ -5,7 +5,7 @@ const hex=b=>Array.from(new Uint8Array(b),x=>x.toString(16).padStart(2,'0')).joi
 const b64=b=>btoa(String.fromCharCode(...b)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 async function key(secret){if(typeof secret!=='string'||secret.length<64)throw new OperationError('STATE_UNAVAILABLE',503);return crypto.subtle.importKey('raw',enc.encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign','verify']);}
 export async function basePayloadHash(p){return payloadHash({apiVersion:1,threadName:p.threadName,content:p.content,tagIds:p.tagIds});}
-export async function createPreviewClaims(p,result,forumId,now=Date.now()){return {v:1,ticketId:crypto.randomUUID(),principal:PRINCIPAL,forumId,basePayloadHash:await basePayloadHash(p),officialUrl:p.officialUrl,imageUrl:result.imageUrl,source:result.source,reasonCode:result.reasonCode,issuedAt:now,expiresAt:now+TTL};}
+export async function createPreviewClaims(p,result,forumId,now=Date.now(),forumGeneration){return {...(forumGeneration!==undefined?{forumGeneration}:{}),v:1,ticketId:crypto.randomUUID(),principal:PRINCIPAL,forumId,basePayloadHash:await basePayloadHash(p),officialUrl:p.officialUrl,imageUrl:result.imageUrl,source:result.source,reasonCode:result.reasonCode,issuedAt:now,expiresAt:now+TTL};}
 export async function signPreview(c,secret){const encoded=b64(enc.encode(JSON.stringify(c)));return 'ip1.'+encoded+'.'+hex(await crypto.subtle.sign('HMAC',await key(secret),enc.encode(domain+encoded)));}
 export async function verifyPreview(ticket,secret,now=Date.now()){
  try{if(typeof ticket!=='string'||ticket.length>8192||!/^ip1\.[A-Za-z0-9_-]+\.[a-f0-9]{64}$/.test(ticket))throw Error();const [,encoded,sig]=ticket.split('.');
@@ -15,4 +15,4 @@ export async function verifyPreview(ticket,secret,now=Date.now()){
  if(c.imageUrl!==null){const policy=officialPolicy(c.officialUrl);if(!policy||allowedUrl(c.imageUrl,policy.imageHosts,{image:true})!==c.imageUrl||!['og:image','twitter:image'].includes(c.source))throw Error();}else if(c.source!==null)throw Error();return c;
  }catch(e){if(e instanceof OperationError&&e.code==='STATE_UNAVAILABLE')throw e;throw new OperationError('INVALID_PREVIEW_TICKET',409);}
 }
-export async function matchPreview(c,p,env){if(c.forumId!==env.DISCORD_FORUM_CHANNEL_ID||c.basePayloadHash!==await basePayloadHash(p)||c.officialUrl!==p.officialUrl||c.imageUrl!==p.imageUrl)throw new OperationError('INVALID_PREVIEW_TICKET',409);}
+export async function matchPreview(c,p,env){if(env.TARGET_GENERATION!==undefined&&c.forumGeneration!==env.TARGET_GENERATION||c.forumId!==env.DISCORD_FORUM_CHANNEL_ID||c.basePayloadHash!==await basePayloadHash(p)||c.officialUrl!==p.officialUrl||c.imageUrl!==p.imageUrl)throw new OperationError('INVALID_PREVIEW_TICKET',409);}

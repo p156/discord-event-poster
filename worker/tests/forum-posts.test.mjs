@@ -83,9 +83,10 @@ test('fixed forum identity, shape and required tags reject before POST',async()=
  const h=mock({channel:{...forum(),flags:16}});assert.equal((await run(h,{...payload(),tagIds:[]})).code,'TAG_REQUIRED');assert.equal(posts(h).length,0);
  assert.equal((await run(mock(),{...payload(),tagIds:[]})).outcome,'succeeded');
 });
-test('tag mapping shared with Phase 2; unknown/missing/duplicate names and IDs reject',async()=>{
+test('tag mapping shared with Phase 2; missing/duplicate IDs reject; arbitrary available tag names are allowed',async()=>{
  const f=forum();assert.equal(forumTagMapping(f).mapping['周遊型'],'100');
- for(const channel of [{...f,available_tags:f.available_tags.slice(1)},{...f,available_tags:[...f.available_tags,{id:'999',name:'周遊型',moderated:false}]},{...f,available_tags:[...f.available_tags,{id:'100',name:'その他',moderated:false}]},{...f,available_tags:[{id:'100',name:'その他',moderated:false}]}]){const h=mock({channel});assert.equal((await run(h)).code,'TAG_INVALID');assert.equal(posts(h).length,0);}
+ for(const channel of [{...f,available_tags:f.available_tags.slice(1)},{...f,available_tags:[...f.available_tags,{id:'100',name:'その他',moderated:false}]}]){const h=mock({channel});assert.equal((await run(h)).code,'TAG_INVALID');assert.equal(posts(h).length,0);}
+ for(const tag of [{id:'100',name:'その他',moderated:false},{id:'100',name:'周遊型',moderated:false}])assert.equal((await run(mock({channel:{...f,available_tags:[tag]}}))).outcome,'succeeded');
  const h=mock({channel:{...f,available_tags:[{id:'100',name:'周遊型',moderated:false}]}});assert.equal((await run(h)).outcome,'succeeded');
 });
 test('moderated tag permissions use fixed Bot/guild roles, never a client capability',async()=>{

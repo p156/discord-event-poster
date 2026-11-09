@@ -1,3 +1,4 @@
+import {verifyForumAccess} from './forum-access.mjs';
 import {fetchAttachment} from './official-image-fetch.mjs';
 // INTERNAL ONLY. Not imported by the public Worker entrypoint.
 // Step 3 must commit durable sending/quota BEFORE calling sendPreparedForumPost.
@@ -21,7 +22,11 @@ export async function prepareForumPost(env,rawPayload,options={}){
   let stage='input';
   try{
     const payload=validatePostPayload(rawPayload),config=fixedDiscordConfig(env);stage='preflight';
-    const channel=await data(readFixedForum(config,options));const selected=selectedForumTags(channel,config.DISCORD_FORUM_CHANNEL_ID,payload.tagIds);
+    let channel;
+    if(env.MANAGED_FORUM||env.CHECK_FORUM_ACCESS){
+      try{channel=(await verifyForumAccess(env,config.DISCORD_FORUM_CHANNEL_ID,options)).channel;}
+      catch(error){if(error.httpStatus===403)throw new DiscordTransportError('HTTP_ERROR',403);throw error;}
+    }else channel=await data(readFixedForum(config,options));const selected=selectedForumTags(channel,config.DISCORD_FORUM_CHANNEL_ID,payload.tagIds);
     if(selected.some(t=>t.moderated)){
       const self=await data(readBotSelf(config,options));if(!isSnowflake(self?.id)||self.bot!==true)throw new PostInputError('TAG_PERMISSION_UNVERIFIED',422,['tagIds']);
       const roles=await data(readForumRoles(config,channel.guild_id,options));const member=await data(readForumMember(config,channel.guild_id,self.id,options));

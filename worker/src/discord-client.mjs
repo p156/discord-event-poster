@@ -29,11 +29,11 @@ export async function discordRateInfo(response,secret,signal=AbortSignal.timeout
   finally{signal.removeEventListener('abort',cancel);}
   return rateInfo(response,body,valid,secret);
 }
-async function readBytes(response,signal){
+async function readBytes(response,signal,maxBytes=65536){
   const reader=response.body?.getReader();if(!reader)throw new DiscordTransportError('JSON_INVALID',response.status);
   const cancel=()=>{void reader.cancel().catch(()=>{});};signal.addEventListener('abort',cancel,{once:true});
   let size=0;const chunks=[];
-  try{while(true){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>65536){cancel();throw new DiscordTransportError('RESPONSE_TOO_LARGE',response.status);}chunks.push(value);}const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}catch{throw new DiscordTransportError('JSON_INVALID',response.status);}}
+  try{while(true){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>maxBytes){cancel();throw new DiscordTransportError('RESPONSE_TOO_LARGE',response.status);}chunks.push(value);}const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}try{return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}catch{throw new DiscordTransportError('JSON_INVALID',response.status);}}
   finally{signal.removeEventListener('abort',cancel);try{reader.releaseLock();}catch{}}
 }
 // Construct every part before the Discord write. Blob parts avoid flattening a
@@ -78,3 +78,16 @@ export function sendFixedForum(env,body,options){const config=fixedDiscordConfig
 export function readBotSelf(env,options){return requestJson(env,'users/@me',readOptions(options));}
 export function readForumRoles(env,guildId,options){if(!isSnowflake(guildId))throw new DiscordTransportError('CONFIG_INVALID');return requestJson(env,'guilds/'+guildId+'/roles',readOptions(options));}
 export function readForumMember(env,guildId,botId,options){if(!isSnowflake(guildId)||!isSnowflake(botId))throw new DiscordTransportError('CONFIG_INVALID');return requestJson(env,'guilds/'+guildId+'/members/'+botId,readOptions(options));}
+
+// Explicitly constructed internal REST reads; never accept a browser-supplied path.
+export async function readDiscord(env,path,options={}){
+  const fetchImpl=options.fetchImpl||globalThis.fetch;
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10000);
+  try{
+    const response=await fetchImpl(BASE+path,{headers:headers(env),redirect:'manual',signal:controller.signal});
+    if(response.status===429)throw new DiscordTransportError('HTTP_ERROR',429,await discordRateInfo(response,env.DISCORD_BOT_TOKEN));
+    if(!response.ok){const error=new DiscordTransportError('HTTP_ERROR',response.status);try{const b=await readBytes(response,controller.signal);if(Number.isSafeInteger(b?.code))error.discordCode=b.code;}catch{}throw error;}
+    return await readBytes(response,controller.signal,1048576);
+  }catch(e){if(e instanceof DiscordTransportError)throw e;throw new DiscordTransportError(controller.signal.aborted?'TIMEOUT':'NETWORK');}
+  finally{clearTimeout(timer);controller.abort();}
+}
