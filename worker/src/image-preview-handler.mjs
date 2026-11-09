@@ -26,7 +26,7 @@ export function createImagePreviewHandler(options={}){return async(request,env)=
   if(thumbnail){let result;try{result=await fetchThumbnail(previous.officialUrl,previous.imageUrl,options);}catch{return response({error:{code:'THUMBNAIL_UNAVAILABLE'}},422);}await imageCall(env,{action:'image.check',token,ticketId:previous.ticketId});return new Response(result.bytes,{headers:{...headers(origin),'Content-Type':result.mime,'Content-Security-Policy':"default-src 'none'; sandbox"}});}
   const result=previous?{imageUrl:null,source:null,reasonCode:'THUMBNAIL_UNAVAILABLE'}:await findOfficialImage(p.officialUrl,options);
   // Recheck current session after external fetch. Register before returning ticket.
-  const c=await createPreviewClaims(p,result,env.DISCORD_FORUM_CHANNEL_ID);const previewTicket=await signPreview(c,env.SESSION_SIGNING_KEY);
+  const c=await createPreviewClaims(p,result,env.DISCORD_FORUM_CHANNEL_ID,Date.now(),env.TARGET_GENERATION);const previewTicket=await signPreview(c,env.SESSION_SIGNING_KEY);
   await imageCall(env,{action:'image.register',token,preview:c,...(previous?{replaceId:previous.ticketId}:{})});
   return response({apiVersion:2,status:result.imageUrl?'image':'no_image',officialUrl:p.officialUrl,...result,previewTicket,expiresAt:c.expiresAt});
  }catch(e){return response({error:{code:e instanceof OperationError||e instanceof PostInputError?e.code:'STATE_UNAVAILABLE'}},e instanceof OperationError||e instanceof PostInputError?e.httpStatus:503);}

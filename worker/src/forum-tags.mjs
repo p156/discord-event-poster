@@ -8,9 +8,10 @@ export function forumTagMapping(channel) {
 }
 export function selectedForumTags(channel,forumId,tagIds) {
   if(channel?.id!==forumId||channel.type!==15||!isSnowflake(channel.guild_id)||!Array.isArray(channel.available_tags)||!channel.available_tags.every(t=>t&&isSnowflake(t.id)&&typeof t.name==='string')||!Number.isSafeInteger(channel.flags??0)|| (channel.flags??0)<0)throw new PostInputError('FORUM_RESPONSE_INVALID',503);
+  if(new Set(channel.available_tags.map(t=>t.id)).size!==channel.available_tags.length)throw new PostInputError('TAG_INVALID',422,['tagIds']);
   if((BigInt(channel.flags??0)&16n)&&tagIds.length===0)throw new PostInputError('TAG_REQUIRED',422,['tagIds']);
   const mapped=forumTagMapping(channel),selected=[];
-  for(const id of tagIds){const matches=channel.available_tags.filter(t=>t.id===id);if(matches.length!==1||!EVENT_TAG_NAMES.includes(matches[0].name)||mapped.mapping[matches[0].name]!==id)throw new PostInputError('TAG_INVALID',422,['tagIds']);if(typeof matches[0].moderated!=='boolean')throw new PostInputError('TAG_PERMISSION_UNVERIFIED',422,['tagIds']);selected.push(matches[0]);}
+  for(const id of tagIds){const matches=channel.available_tags.filter(t=>t.id===id);if(matches.length!==1)throw new PostInputError('TAG_INVALID',422,['tagIds']);if(typeof matches[0].moderated!=='boolean')throw new PostInputError('TAG_PERMISSION_UNVERIFIED',422,['tagIds']);selected.push(matches[0]);}
   return selected;
 }
 function bits(value){if(typeof value!=='string'||!/^\d{1,20}$/.test(value)||BigInt(value)>18446744073709551615n)throw new PostInputError('TAG_PERMISSION_UNVERIFIED',422,['tagIds']);return BigInt(value);}

@@ -1,3 +1,4 @@
+import {managementMock} from './management-mock.mjs';
 import worker from '../src/index.mjs';
 import {findOfficialImage} from '../src/official-image-fetch.mjs';
 import {discordOAuthMock} from './oauth-mock.mjs';
@@ -5,6 +6,7 @@ export {AuthState} from '../src/index.mjs';
 let mode='',writes=0,external=0,sentMessage,attached=false;
 const png=Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGOQqzjxHwAEdAJeoWfKLgAAAABJRU5ErkJggg=='),c=>c.charCodeAt(0));
 globalThis.fetch=async(url,opts={})=>{
+  const managed=managementMock(url,opts);if(managed)return managed;
  const u=new URL(url);
  if(u.origin==='https://discord.com'){
   if(u.pathname==='/api/oauth2/token'||u.pathname==='/api/v10/users/@me')return discordOAuthMock(url,opts);

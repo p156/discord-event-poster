@@ -11,6 +11,7 @@ function reply(body,status,origin,extra={}){return Response.json(body,{status,he
 function rejected(code,status,requestId,origin,fields=[],claims){return reply({apiVersion:1,requestId,operationId:claims?.operationId||null,status:'not_accepted',replayed:false,attempt:0,expiresAt:claims?new Date(claims.expiresAt).toISOString():null,safeToRetry:false,retryAfterSeconds:null,error:{code,message:'投稿処理を完了できませんでした。',fields},result:null},status,origin);}
 async function call(env,body,signed=true){
   const stub=env.AUTH_STATE.get(env.AUTH_STATE.idFromName('personal-auth-v1'));
+  body=env.MANAGED_FORUM&&signed?{...body,managedForumId:env.DISCORD_FORUM_CHANNEL_ID,targetGeneration:env.TARGET_GENERATION}:body;
   const packet=signed?{...body,proof:await internalProof(body,env.SESSION_SIGNING_KEY)}:body;
   const response=await stub.fetch(new Request('https://internal/auth',{method:'POST',body:JSON.stringify(packet)}));
   if(!response.ok){let code=response.status===401?'SESSION_EXPIRED':'STATE_UNAVAILABLE';if(response.status!==401){const b=await response.json();if(['INVALID_OPERATION_KEY','OPERATION_EXPIRED','TARGET_CHANGED','OPERATION_EXPIRING','INVALID_REQUEST','STATE_UNAVAILABLE'].includes(b.error?.code))code=b.error.code;}throw new OperationError(code,response.status);}
@@ -47,7 +48,7 @@ export function createPostHandler({fetchImpl,imageFetchImpl=fetchImpl,timeoutMs}
         return reply({apiVersion:1,requestId,operationId:c.operationId,idempotencyKey:await signOperation(c,env.SESSION_SIGNING_KEY),issuedAt:new Date(c.issuedAt).toISOString(),expiresAt:new Date(c.expiresAt).toISOString(),payloadHash:c.payloadHash,status:'not_started'},201,origin,{Location:'/api/forum/posts/'+c.operationId});
       }
       claims=await verifyOperation(request.headers.get('Idempotency-Key'),env.SESSION_SIGNING_KEY);
-      if(get){if(path.slice('/api/forum/posts/'.length)!==claims.operationId)throw new OperationError('INVALID_OPERATION_KEY');return stateReply(await call(env,{action:'post.inspect',token,claims}),requestId,origin,200);}
+      if(get){if(env.MANAGED_FORUM&&claims.forumId!==env.DISCORD_FORUM_CHANNEL_ID)throw new OperationError('TARGET_CHANGED',409);if(path.slice('/api/forum/posts/'.length)!==claims.operationId)throw new OperationError('INVALID_OPERATION_KEY');return stateReply(await call(env,{action:'post.inspect',token,claims}),requestId,origin,200);}
       const p=await readPostRequest(request);
       if(await payloadHash(p)!==claims.payloadHash)throw new OperationError('KEY_PAYLOAD_CONFLICT',409);
       const current=await call(env,{action:'post.inspect',token,claims});
