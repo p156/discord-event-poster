@@ -3,6 +3,57 @@ const elements={addEventListener(){},classList:{add(){},remove(){},toggle(){}}};
 const c={document:{getElementById:()=>elements},window:{scrollTo(){}},sessionStorage:{getItem:()=>null,setItem(){},removeItem(){}},TextEncoder,URL,crypto:require('node:crypto').webcrypto,setTimeout,clearTimeout};
 vm.createContext(c);for(const f of ['poster-client.js','app.js'])vm.runInContext(fs.readFileSync(f,'utf8'),c);
 const E=c.window.EventPoster,C=c.window.PosterClient;
+const copiedPost = [
+ '【東京】『ウチの実家 〜みんなの「ただいま」をもう一度〜』',
+ '📅11/26〜11/29',
+ '昭和と平成の懐かしい物に囲まれ、こたつで漫画を読み、家族役と会話する不思議な帰省体験。原宿に現れる実家で、自分らしい過ごし方を探せる',
+ '🏠events.mercari.com/uchinojikka/',
+ 'twitter原文',
+].join('\n');
+const copiedUrl = 'https://events.mercari.com/uchinojikka/';
+
+test('a pasted emoji-prefixed bare URL appears once in the official site section',()=>{
+ const e = E.runAnalysis(copiedPost).events[0];
+ assert.equal(e.title, 'ウチの実家 〜みんなの「ただいま」をもう一度〜');
+ assert.equal(e.region, '東京');
+ assert.equal(e.description, copiedPost.split('\n').slice(1).join('\n').replace('🏠events.mercari.com/uchinojikka/', ' '));
+ assert.equal(e.url, copiedUrl);
+ assert.deepEqual(Array.from(e.candidates), [copiedUrl]);
+ assert.doesNotMatch(e.description, /🏠|events\.mercari\.com/);
+ for(const line of copiedPost.split('\n').slice(1).filter(line => !line.startsWith('🏠')))assert.ok(e.description.includes(line));
+ assert.equal(E.contentFor(e).split(copiedUrl).length - 1, 1);
+ assert.equal(E.validateEvent(e).length, 0);
+});
+
+for (const [label, newline] of [['LF', '\n'], ['CRLF', '\r\n']]) {
+ test(`matching outer quotes preserve titles and event boundaries with ${label}`, () => {
+  const body = ['本文に「引用」と “引用” を含む', '> 『引用行』'].join(newline);
+  const cases = [
+   ['【東京】' + newline + '『外側「内側」』', '東京', '外側「内側」'],
+   ['「外側『内側』」', '', '外側『内側』'],
+   ['【大阪】“外側「内側」”', '大阪', '外側「内側」'],
+   ['"外側“内側”"', '', '外側“内側”'],
+  ];
+  const input = cases.map(([heading]) => heading + newline + body).join(newline);
+  const expected = cases.map(([, region, title]) => [region, title]);
+  assert.deepEqual(Array.from(E.splitEvents(input).events, e => [e.region, e.title]), expected);
+  assert.deepEqual(Array.from(E.runAnalysis(input).events, e => [e.region, e.title, e.description]),
+   expected.map(([region, title]) => [region, title, body]));
+  assert.equal(E.runAnalysis('『閉じ方が違う」' + newline + body).events.length, 0);
+ });
+}
+
+test('URL cleanup removes both spellings of the same link within its own event',()=>{
+ const input = copiedPost + '\n' + copiedUrl + '\n【大阪】『別のイベント』\n別の説明\n🏠example.org/second/';
+ const {events} = E.runAnalysis(input);
+ assert.deepEqual(Array.from(events, e => [e.region, e.url]), [
+  ['東京', copiedUrl],
+  ['大阪', 'https://example.org/second/'],
+ ]);
+ assert.deepEqual(Array.from(events[0].candidates), [copiedUrl]);
+ assert.doesNotMatch(events[0].description, /🏠|events\.mercari\.com|別の説明|example\.org/);
+ assert.equal(events[1].description, '別の説明');
+});
 test('mobile bare URL survives parser, URL field model and posted content',()=>{
  for(const raw of ['example.com/event','realescapegame.jp/event','www.scrapmagazine.com/event']){
  const e=E.runAnalysis('【東京】『試験』\n説明\n'+raw).events[0];assert.equal(e.url,'https://'+raw);assert.ok(E.contentFor(e).includes('https://'+raw));assert.ok(!e.description.includes(raw));assert.equal(E.validateEvent(e).length,0);
@@ -35,7 +86,7 @@ test('copied labels and Japanese trailing punctuation yield clean official URLs'
  assert.equal(E.extractLinks('公式URL：example.com/event。\n[公式](https://example.com/event)').length,1);
 });
 test('rejected schemes and email tokens never yield a DNS suffix',()=>{
- for(const raw of ['javascript:example.com/event','data:text/html,example.com/event','ftp://example.com/event','//example.com/event','a@example.com/event','https://a:b@example.com','localhost/x','127.0.0.1/x'])for(const prefix of ['', '公式URL：'])assert.equal(E.extractLinks(prefix+raw).length,0,prefix+raw);
+ for(const raw of ['javascript:example.com/event','data:text/html,example.com/event','ftp://example.com/event','//example.com/event','a@example.com/event','https://a:b@example.com','localhost/x','127.0.0.1/x'])for(const prefix of ['', '公式URL：', '🏠'])assert.equal(E.extractLinks(prefix+raw).length,0,prefix+raw);
  assert.equal(E.extractLinks('https://t.co/abc').length,0);
 });
 test('optional region preserves titles, body quotations and regional headings',()=>{
