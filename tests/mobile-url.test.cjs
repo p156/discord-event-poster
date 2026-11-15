@@ -14,6 +14,9 @@ const copiedUrl = 'https://events.mercari.com/uchinojikka/';
 
 test('a pasted emoji-prefixed bare URL appears once in the official site section',()=>{
  const e = E.runAnalysis(copiedPost).events[0];
+ assert.equal(e.title, 'ウチの実家 〜みんなの「ただいま」をもう一度〜');
+ assert.equal(e.region, '東京');
+ assert.equal(e.description, copiedPost.split('\n').slice(1).join('\n').replace('🏠events.mercari.com/uchinojikka/', ' '));
  assert.equal(e.url, copiedUrl);
  assert.deepEqual(Array.from(e.candidates), [copiedUrl]);
  assert.doesNotMatch(e.description, /🏠|events\.mercari\.com/);
@@ -21,6 +24,24 @@ test('a pasted emoji-prefixed bare URL appears once in the official site section
  assert.equal(E.contentFor(e).split(copiedUrl).length - 1, 1);
  assert.equal(E.validateEvent(e).length, 0);
 });
+
+for (const [label, newline] of [['LF', '\n'], ['CRLF', '\r\n']]) {
+ test(`matching outer quotes preserve titles and event boundaries with ${label}`, () => {
+  const body = ['本文に「引用」と “引用” を含む', '> 『引用行』'].join(newline);
+  const cases = [
+   ['【東京】' + newline + '『外側「内側」』', '東京', '外側「内側」'],
+   ['「外側『内側』」', '', '外側『内側』'],
+   ['【大阪】“外側「内側」”', '大阪', '外側「内側」'],
+   ['"外側“内側”"', '', '外側“内側”'],
+  ];
+  const input = cases.map(([heading]) => heading + newline + body).join(newline);
+  const expected = cases.map(([, region, title]) => [region, title]);
+  assert.deepEqual(Array.from(E.splitEvents(input).events, e => [e.region, e.title]), expected);
+  assert.deepEqual(Array.from(E.runAnalysis(input).events, e => [e.region, e.title, e.description]),
+   expected.map(([region, title]) => [region, title, body]));
+  assert.equal(E.runAnalysis('『閉じ方が違う」' + newline + body).events.length, 0);
+ });
+}
 
 test('URL cleanup removes both spellings of the same link within its own event',()=>{
  const input = copiedPost + '\n' + copiedUrl + '\n【大阪】『別のイベント』\n別の説明\n🏠example.org/second/';
